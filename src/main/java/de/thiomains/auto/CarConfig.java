@@ -14,26 +14,32 @@ import java.util.List;
 public final class CarConfig {
 
     public static final List<String> NUMBER_KEYS = List.of(
-            "max-speed", "max-reverse-speed", "acceleration", "reverse-acceleration",
-            "brake-deceleration", "engine-braking", "drag", "max-lateral-grip",
-            "turn-rate-max", "turn-min-speed",
-            "grip-concrete", "grip-grass", "grip-default"
+            "max-speed", "max-reverse-speed", "max-fall-speed", "acceleration", "reverse-acceleration",
+            "brake-deceleration", "handbrake-deceleration", "engine-braking", "drag", "max-lateral-grip",
+            "turn-curvature", "turn-min-speed", "downhill-assist",
+            "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip"
     );
     public static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug");
 
     public double maxSpeed;
     public double maxReverseSpeed;
+    public double maxFallSpeed;
     public double acceleration;
     public double reverseAcceleration;
     public double brakeDeceleration;
+    public double handbrakeDeceleration;
     public double engineBraking;
     public double drag;
     public double maxLatGrip;
-    public double turnRateMax;
+    /** Lenkrad-Anschlag: maximale Krümmung der Spur in Grad pro Meter (radlaengen-basiert). */
+    public double turnCurvature;
     public double turnMinSpeed;
+    public double downhillAssist;
     public double gripConcrete;
     public double gripGrass;
+    public double gripIce;
     public double gripDefault;
+    public double handbrakeGrip;
     public boolean understeerSound;
     public boolean debug;
 
@@ -48,17 +54,22 @@ public final class CarConfig {
         FileConfiguration c = plugin.getConfig();
         maxSpeed = kmh(c.getDouble("max-speed", 162.0));
         maxReverseSpeed = kmh(c.getDouble("max-reverse-speed", 8.6));
+        maxFallSpeed = kmh(c.getDouble("max-fall-speed", 144.0));
         acceleration = metersPerSecondSquared(c.getDouble("acceleration", 12.0));
         reverseAcceleration = metersPerSecondSquared(c.getDouble("reverse-acceleration", 3.2));
         brakeDeceleration = metersPerSecondSquared(c.getDouble("brake-deceleration", 24.0));
+        handbrakeDeceleration = metersPerSecondSquared(c.getDouble("handbrake-deceleration", 10.0));
         engineBraking = metersPerSecondSquared(c.getDouble("engine-braking", 1.6));
         drag = percentPerSecondToTick(c.getDouble("drag", 1.0));
-        maxLatGrip = metersPerSecondSquared(c.getDouble("max-lateral-grip", 14.0));
-        turnRateMax = c.getDouble("turn-rate-max", 140.0) / 20.0;
+        maxLatGrip = metersPerSecondSquared(c.getDouble("max-lateral-grip", 22.0));
         turnMinSpeed = kmh(c.getDouble("turn-min-speed", 3.6));
+        turnCurvature = c.getDouble("turn-curvature", 40.0);
+        downhillAssist = metersPerSecondSquared(c.getDouble("downhill-assist", 6.0));
         gripConcrete = c.getDouble("grip-concrete", 100.0) / 100.0;
         gripGrass = c.getDouble("grip-grass", 50.0) / 100.0;
+        gripIce = c.getDouble("grip-ice", 15.0) / 100.0;
         gripDefault = c.getDouble("grip-default", 80.0) / 100.0;
+        handbrakeGrip = c.getDouble("handbrake-grip", 35.0) / 100.0;
         understeerSound = c.getBoolean("understeer-sound", true);
         debug = c.getBoolean("debug", false);
     }

@@ -20,10 +20,13 @@ public final class Car {
     private double velX;
     private double velZ;
     private float yaw;
+    private double yawVel;
+    private boolean lastStepBlocked;
     private double fallSpeed;
     private long lastUndersteerSoundMs;
     private int simTicks;
     private boolean simDrift;
+    private boolean simDrive;
 
     public Car(ArmorStand base, ItemDisplay model, Interaction hitbox) {
         this.base = base;
@@ -82,6 +85,24 @@ public final class Car {
         this.yaw = yaw;
     }
 
+    /** Geglaettete aktuelle Drehrate in Grad/Tick (Lenk-Schwung). */
+    public double getYawVel() {
+        return yawVel;
+    }
+
+    public void setYawVel(double yawVel) {
+        this.yawVel = yawVel;
+    }
+
+    /** true, wenn der letzte Tick Blockkontakt hatte (erlaubt Rangieren im Stand). */
+    public boolean wasStepBlocked() {
+        return lastStepBlocked;
+    }
+
+    public void setStepBlocked(boolean stepBlocked) {
+        this.lastStepBlocked = stepBlocked;
+    }
+
     public double getFallSpeed() {
         return fallSpeed;
     }
@@ -112,6 +133,14 @@ public final class Car {
 
     public void setSimDrift(boolean simDrift) {
         this.simDrift = simDrift;
+    }
+
+    public boolean isSimDrive() {
+        return simDrive;
+    }
+
+    public void setSimDrive(boolean simDrive) {
+        this.simDrive = simDrive;
     }
 
     /** Der fahrende Spieler (Passagier auf dem ArmorStand), oder null. */

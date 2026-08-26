@@ -10,34 +10,45 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 4
+config-version: 7
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 162.0
 # Max. Rückwärtsgeschwindigkeit in km/h
 max-reverse-speed: 8.6
+# Max. Fallgeschwindigkeit in km/h (in der Luft gibt es keinen Grip: kein Antrieb, keine Lenkung)
+max-fall-speed: 144.0
 # Beschleunigung vorwärts in m/s² (bei 100 % Grip)
 acceleration: 12.0
 # Beschleunigung rückwärts in m/s² - bewusst deutlich träger als vorwärts
 reverse-acceleration: 3.2
 # Bremskraft in m/s² (bei 100 % Grip; weniger Grip verlängert den Bremsweg)
 brake-deceleration: 24.0
-# Motorbremse in m/s² (wirkt immer, auch unter Gas/Bremse)
+# Handbremse (Sprungtaste) in m/s² - blockiert die Räder, Grip bricht auf handbrake-grip ein
+handbrake-deceleration: 10.0
+# Motorbremse in m/s² (wirkt am Boden, auch unter Gas/Bremse)
 engine-braking: 1.6
 # Luftwiderstand: % der Geschwindigkeit, die pro Sekunde verloren geht
 drag: 1.0
 # Max. Querbeschleunigung der Reifen in m/s² (bei 100 % Grip).
 # Bestimmt physikalisch, wie eng das Auto bei Tempo lenken kann, ohne quer zu rutschen.
 # Klein = driftig, groß = kartartig.
-max-lateral-grip: 14.0
-# Lenkrad-Deckel in Grad pro Sekunde: Obergrenze der physischen Yaw-Rate im Kriechtempo
-turn-rate-max: 140.0
-# Absolute Mindestgeschwindigkeit in km/h, ab der gelenkt wird (im Stillstand dreht das Auto nicht)
+max-lateral-grip: 22.0
+# Lenkrad-Anschlag: maximale Krümmung der Spur in Grad pro Meter (realistisches Lenkmodell:
+# die Yaw-Rate skaliert mit dem Tempo; im Kriechtempo ergibt sich ein konstanter Wendekreis)
+turn-curvature: 40.0
+# Absolute Mindestgeschwindigkeit in km/h, ab der gelenkt wird (an Wandkontakt darf im Stand rangiert werden)
 turn-min-speed: 3.6
-# Grip-Werte in Prozent: alle Betonfarben | Gras/Erde/Schlamm/Schnee | sonstige Blöcke
+# Bergab-Schub in m/s²: wird pro eingerasteter Abstiegsstufe in Fahrtrichtung addiert
+# (schaltet Kriech-Lenkung und Vortrieb bergab wieder frei)
+downhill-assist: 6.0
+# Grip-Werte in Prozent: Betonfarben | Gras/Erde/Schlamm/Schnee | alle Eisarten | sonstige Blöcke
 grip-concrete: 100.0
 grip-grass: 50.0
+grip-ice: 15.0
 grip-default: 80.0
+# Rest-Grip in Prozent während die Handbremse gezogen ist (klein = driftfreudig)
+handbrake-grip: 35.0
 # Quietsch-Sound bei Untersteuern/Schlupf
 understeer-sound: true
 # Debug-Logging (Fahrzustand, Ein-/Aussteigen) in die Konsole
