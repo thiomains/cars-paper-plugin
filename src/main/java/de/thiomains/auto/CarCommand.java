@@ -199,7 +199,10 @@ public final class CarCommand implements BasicCommand {
     }
 
     // Headless-Selbsttest: kontrollierte Teststrecke (flach, Steinwand 6 Blöcke voraus) bei x/z=200/200.
-    // Flags: drift (Drehung), gap (2-Block-Loch -> Flugphase), ice (Eisbahn), stairs (Abstieg ab z+3).
+    // Die Strecke ist drei Spalten breit (baseX-1..+1): die Rad-Samples der Grip-Physik liegen bei
+    // ±0,7 quer zur Fahrtrichtung und brauchen Boden unter dem Footprint.
+    // Flags: drift (Drehung), gap (4-Block-Loch -> Flugphase; Loecher bis 2 Bloecke ueberbrueckt
+    // der Footprint, weil stets ein Rad gestuetzt bleibt), ice (Eisbahn), stairs (Abstieg ab z+3).
     private void runSim(CommandSender sender, String[] args) {
         // Negative Werte = Rückwärtsfahrt entgegen dem Blick-Yaw (prüft das Ausrichten auf die Rollrichtung)
         double simSpeed = 0.3;
@@ -220,23 +223,25 @@ public final class CarCommand implements BasicCommand {
         org.bukkit.World world = org.bukkit.Bukkit.getWorlds().get(0);
         int baseX = 200, baseZ = 200, groundY = 60;
         org.bukkit.Material ground = ice ? org.bukkit.Material.PACKED_ICE : org.bukkit.Material.STONE;
-        for (int rz = 0; rz <= 8; rz++) {
-            int gy = stairs ? groundY - Math.max(0, rz - 2) : groundY;
-            for (int ry = gy; ry <= groundY + 7; ry++) {
-                world.getBlockAt(baseX, ry, baseZ + rz).setType(org.bukkit.Material.AIR);
+        for (int bx = baseX - 1; bx <= baseX + 1; bx++) {
+            for (int rz = 0; rz <= 8; rz++) {
+                int gy = stairs ? groundY - Math.max(0, rz - 2) : groundY;
+                for (int ry = gy; ry <= groundY + 7; ry++) {
+                    world.getBlockAt(bx, ry, baseZ + rz).setType(org.bukkit.Material.AIR);
+                }
+                world.getBlockAt(bx, gy - 1, baseZ + rz).setType(ground);
             }
-            world.getBlockAt(baseX, gy - 1, baseZ + rz).setType(ground);
-        }
-        if (gap) {
-            for (int rz = 3; rz <= 4; rz++) {
-                world.getBlockAt(baseX, groundY - 1, baseZ + rz).setType(org.bukkit.Material.AIR);
-                world.getBlockAt(baseX, groundY - 2, baseZ + rz).setType(org.bukkit.Material.AIR);
-                world.getBlockAt(baseX, groundY - 3, baseZ + rz).setType(ground);
+            if (gap) {
+                for (int rz = 2; rz <= 5; rz++) {
+                    world.getBlockAt(bx, groundY - 1, baseZ + rz).setType(org.bukkit.Material.AIR);
+                    world.getBlockAt(bx, groundY - 2, baseZ + rz).setType(org.bukkit.Material.AIR);
+                    world.getBlockAt(bx, groundY - 3, baseZ + rz).setType(ground);
+                }
             }
-        }
-        int wallY = stairs ? groundY - 4 : groundY;
-        for (int ry = wallY; ry <= groundY + 3; ry++) {
-            world.getBlockAt(baseX, ry, baseZ + 6).setType(org.bukkit.Material.STONE);
+            int wallY = stairs ? groundY - 4 : groundY;
+            for (int ry = wallY; ry <= groundY + 3; ry++) {
+                world.getBlockAt(bx, ry, baseZ + 6).setType(org.bukkit.Material.STONE);
+            }
         }
         org.bukkit.Location loc = new org.bukkit.Location(world, baseX + 0.5, groundY, baseZ + 0.5, 0f, 0f);
         Car car = carManager.spawnCar(loc, 0f);

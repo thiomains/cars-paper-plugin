@@ -53,6 +53,8 @@ public final class DriveTask extends BukkitRunnable {
     private static final double YAW_DEADBAND = 0.03;
     private static final double[] GRID_LONG = {-LONG_HALF, 0.0, LONG_HALF};
     private static final double[] GRID_LAT = {-LAT_HALF, 0.0, LAT_HALF};
+    private static final double[] WHEEL_LONG = {-0.9, 0.9};
+    private static final double[] WHEEL_LAT = {-0.7, 0.7};
 
     private final CarManager carManager;
     private final CarConfig config;
@@ -112,11 +114,27 @@ public final class DriveTask extends BukkitRunnable {
         double lz = vz - vf * fz;
 
         // Bodenkontakt bestimmt alles Weitere: nur am Boden gibt es Grip und Kraefte.
+        // Grip/grounded kommen aus vier Rad-Samples (yaw-ausgerichtet, innerhalb des
+        // Footprints) mit einem Block Federungstoleranz (siehe wheelSupport); nicht
+        // gestuetzte Raeder zaehlen mit 0 in die Division durch 4: haengt die halbe
+        // Karosse ueber einer echten Kante, halbiert sich der wirksame Grip.
         int gy = floor(loc.getY() - 0.05);
         Block below = world.getBlockAt(floor(loc.getX()), gy, floor(loc.getZ()));
         Material groundType = below.getType();
-        boolean grounded = supportsCar(below) && loc.getY() - supportTop(below, gy) < 0.05;
-        double grip = grounded ? gripCalculator.gripFor(groundType) : 0.0;
+        int supported = 0;
+        double gripSum = 0.0;
+        for (double wLong : WHEEL_LONG) {
+            for (double wLat : WHEEL_LAT) {
+                Block support = wheelSupport(world, floor(loc.getX() + fx * wLong + fz * wLat), gy,
+                        floor(loc.getZ() + fz * wLong - fx * wLat), loc.getY());
+                if (support != null) {
+                    supported++;
+                    gripSum += gripCalculator.gripFor(support.getType());
+                }
+            }
+        }
+        boolean grounded = supported >= 1;
+        double grip = grounded ? gripSum / 4.0 : 0.0;
         double gripEff = grip;
 
         Input input = driver != null ? driver.getCurrentInput() : null;
@@ -726,6 +744,24 @@ public final class DriveTask extends BukkitRunnable {
             return false;
         }
         return !block.isPassable();
+    }
+
+    /** Rad-Auflage: Boden auf Fahrzeug-Niveau (Kontaktabstand < 0.05) ODER maximal einen
+     *  Block tiefer (Federungs-Toleranz, damit z. B. ein Rad neben einem eine Zeile
+     *  tieferen Gehweg weiter traegt — erst darueber gilt das Rad als haengend). */
+    private Block wheelSupport(org.bukkit.World world, int wx, int gy, int wz, double carY) {
+        Block level = world.getBlockAt(wx, gy, wz);
+        if (supportsCar(level) && carY - supportTop(level, gy) < 0.05) {
+            return level;
+        }
+        Block lower = world.getBlockAt(wx, gy - 1, wz);
+        if (supportsCar(lower)) {
+            double drop = carY - supportTop(lower, gy - 1);
+            if (drop >= 0.05 && drop <= 1.05) {
+                return lower;
+            }
+        }
+        return null;
     }
 
     private void playUndersteerSound(Car car, World world, Location loc) {
