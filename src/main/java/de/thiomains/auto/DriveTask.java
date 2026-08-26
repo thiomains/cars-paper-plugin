@@ -280,7 +280,9 @@ public final class DriveTask extends BukkitRunnable {
         double gripUsage = 0.0;
         if (grounded && gripEff > 0) {
             double budget = config.maxLatGrip * gripEff;
-            double needed = startAbs * Math.sin(Math.toRadians(steerDemandDeg));
+            // Traktionskreis: Quer- UND Pedal-Anforderung zehren am selben Grip-Budget —
+            // Vollgas oder Vollbremsung zeigt die Anzeige auch ohne Lenkung am Limit.
+            double needed = Math.hypot(startAbs * Math.sin(Math.toRadians(steerDemandDeg)), longForce);
             gripUsage = Math.min(1.5, needed / budget);
             gripUsage = Math.max(gripUsage, Math.sin(Math.toRadians(Math.min(slipDeg, 90.0))));
         }
