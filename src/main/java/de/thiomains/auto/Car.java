@@ -21,6 +21,7 @@ public final class Car {
     private double velZ;
     private float yaw;
     private double yawVel;
+    private double spinVel;
     private boolean lastStepBlocked;
     private double fallSpeed;
     private long lastUndersteerSoundMs;
@@ -92,6 +93,16 @@ public final class Car {
 
     public void setYawVel(double yawVel) {
         this.yawVel = yawVel;
+    }
+
+    /** Crash-Drehrate in Grad/Tick (Hebel-Impuls aus Wandkontakt); getrennt von yawVel,
+     *  damit der Lenk-Smoother den Crash-Spin nicht sofort wieder bekämpft. */
+    public double getSpinVel() {
+        return spinVel;
+    }
+
+    public void setSpinVel(double spinVel) {
+        this.spinVel = spinVel;
     }
 
     /** true, wenn der letzte Tick Blockkontakt hatte (erlaubt Rangieren im Stand). */

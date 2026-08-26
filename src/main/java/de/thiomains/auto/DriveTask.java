@@ -24,9 +24,11 @@ import java.util.List;
  * zusaetzlich frisst direkte laterale Reibung die Querkomponente (Schlupfabbau). Die
  * Handbremse schwaecht nur die Folgefaehigkeit (Drift), nicht die Lenkrate. Kollision tastet
  * die Route achsenweise substep-weise mit einem yaw-ausgerichteten 3x3-Footprint ab
- * (Karosserie mit Nase/Heck statt Punkt), blockierte Achsen verlieren nur ihre Komponente
- * (Gleiten). Bergab rastet das Auto kurze Abstiege sofort ein (Step-Down) und bekommt
- * Downhill-Schub. Motorbremse wirkt nur ohne Fahrpedal.
+ * (Karosserie mit Nase/Heck statt Punkt); eine blockierte Achse wird gedeckelt reflektiert und
+ * der Aufprall-Hebel versetzt zusaetzlich nur die Karosserie in Drehung (spinVel), sodass der
+ * Vektor anschliessend grip-begrenzt hinterherzieht (emergentes Schleudern). Steigungen
+ * tauschen kinetische Energie (2·g·dy), bergab gibt es zusaetzlich gefaelle-skalenten Schub.
+ * Motorbremse wirkt nur ohne Fahrpedal.
  */
 public final class DriveTask extends BukkitRunnable {
 
@@ -48,6 +50,11 @@ public final class DriveTask extends BukkitRunnable {
     private static final double MAX_STEP_DOWN = 1.2;
     private static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
     private static final double OVERSPEED_DOWNHILL_FACTOR = 1.5;
+    private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
+    private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
+    private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
+    private static final double MAX_SPIN = 18.0; // deg/tick, gegen unansehnliche Vollrotation
+    private static final double SPIN_DEADBAND = 0.05;
     private static final double YAW_SMOOTH_IN = 0.30;
     private static final double YAW_SMOOTH_OUT = 0.40;
     private static final double YAW_DEADBAND = 0.03;
@@ -185,6 +192,20 @@ public final class DriveTask extends BukkitRunnable {
             yaw = wrapDeg(yaw + 6f);
         }
 
+        // Crash-Spin: dreht nur die Karosserie (yaw), nicht den Geschwindigkeitsvektor —
+        // der Vektor folgt ueber das uebliche Grip-Budget (ALIGN), daraus entsteht das
+        // Schleudern. Am Boden frisst Reifenreibung den Drehimpuls grip-abhaengig,
+        // in der Luft bleibt er nahezu erhalten (Drehimpulserhaltung).
+        double spinVel = car.getSpinVel();
+        if (spinVel != 0.0) {
+            yaw = wrapDeg(yaw + (float) spinVel);
+            spinVel *= grounded ? (1.0 - 0.25 * grip) : 0.995;
+            if (Math.abs(spinVel) < SPIN_DEADBAND) {
+                spinVel = 0.0;
+            }
+            car.setSpinVel(spinVel);
+        }
+
         // Simulations-Gas: Gas geben ohne Fahrer (Spiegelbild des W-Falls aus applyInput),
         // damit das Losfahren aus dem Stand headless verifizierbar bleibt
         if (car.isSimDrive() && driver == null && grounded) {
@@ -268,21 +289,21 @@ public final class DriveTask extends BukkitRunnable {
                 boolean canSnapDown = car.getFallSpeed() == 0;
                 // Achsenweise: blockierte Achse verliert ihre Geschwindigkeit, die freie gleitet weiter
                 if (vx != 0) {
-                    StepResult sx = resolveStep(world, others, yaw, canSnapDown,
+                    StepResult sx = resolveStep(world, others, yaw, canSnapDown, 1,
                             targetX, targetY, targetZ, targetX + vx, targetZ);
                     if (sx.blocked()) {
                         stepBlocked = true;
-                        vx = 0;
+                        vx = resolveCrashVelocity(car, vx, sx, targetX, targetZ);
                     }
                     targetX = sx.x();
                     targetY = sx.y();
                 }
                 if (vz != 0) {
-                    StepResult sz = resolveStep(world, others, yaw, canSnapDown,
+                    StepResult sz = resolveStep(world, others, yaw, canSnapDown, 2,
                             targetX, targetY, targetZ, targetX, targetZ + vz);
                     if (sz.blocked()) {
                         stepBlocked = true;
-                        vz = 0;
+                        vz = resolveCrashVelocity(car, vz, sz, targetX, targetZ);
                     }
                     targetZ = sz.z();
                     targetY = sz.y();
@@ -496,12 +517,12 @@ public final class DriveTask extends BukkitRunnable {
      * laeuft weiter. Bei echter Blockade steht das Auto am letzten freien Sample.
      */
     private StepResult resolveStep(World world, List<Location> others, float carYaw, boolean canSnapDown,
-                                   double fromX, double fromY, double fromZ, double toX, double toZ) {
+                                   int axis, double fromX, double fromY, double fromZ, double toX, double toZ) {
         double distX = toX - fromX;
         double distZ = toZ - fromZ;
         double dist = Math.hypot(distX, distZ);
         if (dist <= 0) {
-            return new StepResult(false, fromX, fromY, fromZ);
+            return new StepResult(false, fromX, fromY, fromZ, 0.0, 0.0, 0, 0.0);
         }
         int samples = Math.max(1, (int) Math.ceil(dist / SAMPLE_STEP));
         double stepX = distX / samples;
@@ -518,24 +539,30 @@ public final class DriveTask extends BukkitRunnable {
             double sx = fromX + stepX * i;
             double sz = fromZ + stepZ * i;
             if (nearOtherCar(others, sx, sz)) {
-                return new StepResult(true, freeX, curY, freeZ);
+                return new StepResult(true, freeX, curY, freeZ, sx, sz, 3, dist);
             }
             double obstacleTop = Double.NEGATIVE_INFINITY;
+            double obstaclePx = sx;
+            double obstaclePz = sz;
             int by = floor(curY);
             for (double fl : GRID_LONG) {
                 for (double sl : GRID_LAT) {
                     double px = sx + fwdX * fl + sideX * sl;
                     double pz = sz + fwdZ * fl + sideZ * sl;
-                    obstacleTop = Math.max(obstacleTop,
-                            columnObstacleTop(world, floor(px), by, floor(pz)));
+                    double columnTop = columnObstacleTop(world, floor(px), by, floor(pz));
+                    if (columnTop > obstacleTop) {
+                        obstacleTop = columnTop;
+                        obstaclePx = px;
+                        obstaclePz = pz;
+                    }
                 }
             }
             if (obstacleTop > curY + MAX_STEP) {
-                return new StepResult(true, freeX, curY, freeZ);
+                return new StepResult(true, freeX, curY, freeZ, obstaclePx, obstaclePz, axis, dist);
             }
             if (obstacleTop > curY + 1.0e-4) {
                 if (!canStandAt(world, sx, obstacleTop, sz, fwdX, fwdZ, sideX, sideZ)) {
-                    return new StepResult(true, freeX, curY, freeZ);
+                    return new StepResult(true, freeX, curY, freeZ, obstaclePx, obstaclePz, axis, dist);
                 }
                 curY = obstacleTop;
             }
@@ -545,7 +572,32 @@ public final class DriveTask extends BukkitRunnable {
             freeX = sx;
             freeZ = sz;
         }
-        return new StepResult(false, toX, curY, toZ);
+        return new StepResult(false, toX, curY, toZ, 0.0, 0.0, 0, 0.0);
+    }
+
+    /**
+     * Crash-Physik bei Blockade: statt die Achsen-Komponente still zu loeschen, wird sie teilweise
+     * reflektiert (crash-restitution, auf CRASH_REBOUND_MAX gedeckelt, gegen andere Autos nur halb)
+     * und Wandkontakte versetzen die Karosserie ueber den Aufprall-Hebel in Drehung
+     * (tau = Hebel x Impuls, 2D-Kreuzprodukt). Unter CRASH_MIN_SPEED bleibt es der ruhige
+     * Rangier-Stopp. Rueckgabe: die neue Achsen-Geschwindigkeit.
+     */
+    private double resolveCrashVelocity(Car car, double vAxis, StepResult sr, double fromX, double fromZ) {
+        double impact = sr.impactSpeed();
+        if (impact < CRASH_MIN_SPEED) {
+            return 0.0;
+        }
+        boolean hitCar = sr.impactAxis() == 3;
+        double restitution = hitCar ? config.crashRestitution * 0.5 : config.crashRestitution;
+        if (!hitCar && config.crashSpin > 0) {
+            double leverX = sr.impactX() - fromX;
+            double leverZ = sr.impactZ() - fromZ;
+            double normX = sr.impactAxis() == 1 ? -Math.signum(vAxis) : 0.0;
+            double normZ = sr.impactAxis() == 2 ? -Math.signum(vAxis) : 0.0;
+            double torque = leverX * (normZ * impact) - leverZ * (normX * impact);
+            car.setSpinVel(clamp(car.getSpinVel() + config.crashSpin * SPIN_SCALE * torque, -MAX_SPIN, MAX_SPIN));
+        }
+        return -clamp(restitution * impact, 0.0, CRASH_REBOUND_MAX) * Math.signum(vAxis);
     }
 
     /** Boden bei (x,z) auf Hoehe curY oder bis MAX_STEP_DOWN darunter; sonst unveraendert. */
@@ -809,8 +861,11 @@ public final class DriveTask extends BukkitRunnable {
         return (int) Math.floor(v);
     }
 
-    private record StepResult(boolean blocked, double x, double y, double z) {
-        // blocked=true heißt: Route nicht frei; x/z zeigen dann auf den letzten freien Sample-Punkt
+    private record StepResult(boolean blocked, double x, double y, double z,
+                              double impactX, double impactZ, int impactAxis, double impactSpeed) {
+        // blocked=true heißt: Route nicht frei; x/z zeigen dann auf den letzten freien Sample-Punkt.
+        // impact*: Crash-Daten — Footprint-Grid-Punkt des Blockers, getroffene Achse
+        // (0 = kein Aufprall, 1 = X-Wand, 2 = Z-Wand, 3 = anderes Auto) und |Achsen-Geschwindigkeit|.
     }
 
     private record GravityResult(double y, boolean snapped) {
