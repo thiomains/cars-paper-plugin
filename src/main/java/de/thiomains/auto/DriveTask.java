@@ -170,7 +170,8 @@ public final class DriveTask extends BukkitRunnable {
         // Simulations-Gas: Gas geben ohne Fahrer (Spiegelbild des W-Falls aus applyInput),
         // damit das Losfahren aus dem Stand headless verifizierbar bleibt
         if (car.isSimDrive() && driver == null && grounded) {
-            vf = Math.min(vf + config.acceleration * grip, config.maxSpeed);
+            vf = Math.min(vf + config.acceleration * grip
+                    * clamp(1.0 - vf / Math.max(config.maxSpeed, 1.0e-9), 0.0, 1.0), config.maxSpeed);
         }
 
         // Motorbremse nur bei losgelassenem Pedal, Luftwiderstand immer
@@ -275,16 +276,31 @@ public final class DriveTask extends BukkitRunnable {
         double fallBefore = car.getFallSpeed();
         GravityResult gravity = applyGravity(world, targetX, targetY, targetZ, car, wantsMove);
         targetY = gravity.y();
-        // Downhill-Assist: jede eingerastete Abwaertsbewegung im Bodenkontakt setzt Gravitation
-        // in Schub entlang der aktuellen Geschwindigkeit um (bergab wird man schneller)
-        if (wantsMove && car.getFallSpeed() == 0 && targetY < loc.getY() - 0.05) {
+        // Steigungs-Energie: einmal pro Tick am Gesamt-dy. Bergauf kostet kinetische Energie
+        // (2·g·dy), bergab wird sie symmetrisch gewonnen; downhill-assist bleibt als ein
+        // Arcade-Bonus und skaliert mit dem echten Gefaelle des Ticks (volle Wirkung ab 0,5
+        // Block Gefaelle pro Tick). Nicht bei echtem Fall (fallBefore == 0 UND fallSpeed == 0):
+        // eine Landung aus einem Fall darf keinen Schub erzeugen.
+        if (wantsMove && fallBefore == 0 && car.getFallSpeed() == 0) {
+            double dy = targetY - loc.getY();
             double speed = Math.hypot(vx, vz);
-            if (speed > 1.0e-9) {
-                double boosted = Math.min(speed + config.downhillAssist,
-                        config.maxSpeed * OVERSPEED_DOWNHILL_FACTOR);
-                double scale = boosted / speed;
-                vx *= scale;
-                vz *= scale;
+            if (dy != 0 && speed > 1.0e-9) {
+                double v2 = vx * vx + vz * vz;
+                double v2New = v2 - 2.0 * GRAVITY_ACCEL * config.slopeResistance * dy;
+                if (v2New <= 0) {
+                    // kompletter Energieverlust am Berg: Totalstopp
+                    vx = 0;
+                    vz = 0;
+                } else {
+                    double newSpeed = Math.sqrt(v2New);
+                    if (dy < 0) {
+                        newSpeed += config.downhillAssist * clamp(-dy / 0.5, 0.0, 1.0);
+                        newSpeed = Math.min(newSpeed, config.maxSpeed * OVERSPEED_DOWNHILL_FACTOR);
+                    }
+                    double scale = newSpeed / speed;
+                    vx *= scale;
+                    vz *= scale;
+                }
             }
         }
         // Harte Landung nur nach echtem Fall: Querschwung bricht ein, Aufsetzen ist hörbar
@@ -375,13 +391,17 @@ public final class DriveTask extends BukkitRunnable {
             if (vf < -0.01) {
                 vf = Math.min(vf + config.brakeDeceleration * grip, 0);
             } else {
-                vf = Math.min(vf + config.acceleration * grip, config.maxSpeed);
+                // Weicher Limiter: Antriebskraft geht Richtung Vmax gegen null statt hartem Cut
+                vf = Math.min(vf + config.acceleration * grip
+                        * clamp(1.0 - vf / Math.max(config.maxSpeed, 1.0e-9), 0.0, 1.0), config.maxSpeed);
             }
         } else if (backward) {
             if (vf > 0.01) {
                 vf = Math.max(vf - config.brakeDeceleration * grip, 0);
             } else {
-                vf = Math.max(vf - config.reverseAcceleration * grip, -config.maxReverseSpeed);
+                vf = Math.max(vf - config.reverseAcceleration * grip
+                        * clamp(1.0 + vf / Math.max(config.maxReverseSpeed, 1.0e-9), 0.0, 1.0),
+                        -config.maxReverseSpeed);
             }
         }
         return vf;
@@ -722,6 +742,10 @@ public final class DriveTask extends BukkitRunnable {
             return Math.max(0, value - step);
         }
         return Math.min(0, value + step);
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     /** Winkel in die Spanne (-180, 180] wickeln. */
