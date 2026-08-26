@@ -12,19 +12,23 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 
-import java.util.List;
-
 /**
  * Per-Tick-Fahrphysik aller registrierten Autos.
- * Gas/Bremse über semantischen Input (respektiert Keybinds), Motorbremse ohne Input,
- * mausgesteuerte Lenkung mit geschwindigkeits- und gripabhängiger Rate,
- * Untersteuern bei zu hoher geforderter Rate, 1-Block-Stufen, einfache Gravitation.
+ * Zustand ist ein Geschwindigkeitsvektor (velX/velZ) plus Fahrwerk-Yaw. Antrieb und Bremse
+ * wirken auf die Fahrtrichtungs-Komponente; Motorbremse und Luftwiderstand wirken immer.
+ * Die Lenkung dreht den Yaw; der Geschwindigkeitsvektor folgt dem Fahrwerk begrenzt durch
+ * das laterale Grip-Budget (max-lateral-grip × Oberflächen-Grip): zu enges Lenken bei Tempo
+ * lässt den Weg dem Fahrwerk hinterherhinken — das ist der Schlupf (quer rutschen).
  */
 public final class DriveTask extends BukkitRunnable {
 
     private static final double UNDERSTEER_SOUND_COOLDOWN_MS = 300;
     private static final double MAX_FALL_SPEED = 0.5;
     private static final double GRAVITY_ACCEL = 0.08;
+    private static final double ALIGN_FRACTION = 0.65;
+    private static final double SPEED_EPSILON = 0.05;
+    private static final double SLIP_SOUND_MIN_DEG = 12.0;
+    private static final double SAMPLE_STEP = 0.4;
 
     private final CarManager carManager;
     private final CarConfig config;
@@ -69,80 +73,100 @@ public final class DriveTask extends BukkitRunnable {
         Location loc = base.getLocation();
         World world = loc.getWorld();
 
-        double speed = car.getSpeed();
-        double speedStart = speed;
-        float oldYaw = car.getYaw();
-        float yaw = oldYaw;
+        float yaw = car.getYaw();
+        float oldYaw = yaw;
+        double yawRad = Math.toRadians(yaw);
+        double fx = -Math.sin(yawRad);
+        double fz = Math.cos(yawRad);
+        double vx = car.getVelX();
+        double vz = car.getVelZ();
+        double startAbs = Math.hypot(vx, vz);
+        double vf = vx * fx + vz * fz;
+        double lx = vx - vf * fx;
+        double lz = vz - vf * fz;
 
         double grip = gripCalculator.gripFor(groundMaterial(world, loc.getX(), loc.getY(), loc.getZ()));
 
         if (driver != null) {
             Input input = driver.getCurrentInput();
-            speed = applyInput(speed, input, grip);
+            vf = applyInput(vf, input, grip);
 
-            double absSpeed = Math.abs(speed);
-            if (absSpeed >= config.turnMinSpeed) {
-                double speedScale = Math.min(1.0, absSpeed / (0.25 * config.maxSpeed));
-                double rateFactor = config.turnLowSpeedFactor + (1.0 - config.turnLowSpeedFactor) * speedScale;
-                double allowed = config.turnRateMax * grip * rateFactor;
-                double diff = steerDemand(input, driver, yaw, speed, allowed);
-                if (Math.abs(diff) > allowed) {
-                    // Untersteuern: Räder drehen nur teilweise ein
-                    diff = Math.signum(diff) * allowed;
-                    playUndersteerSound(car, world, loc);
-                }
-                yaw = wrapDeg(yaw + (float) diff);
+            if (startAbs >= config.turnMinSpeed) {
+                // Lenkrate: Lenkrad-Deckel UND physikalische Grip-Grenze (Budget ÷ Tempo)
+                double gripCapDeg = Math.toDegrees((config.maxLatGrip * grip) / Math.max(startAbs, SPEED_EPSILON));
+                double allowed = Math.min(config.turnRateMax, gripCapDeg);
+                double diff = steerDemand(input, driver, yaw, vf, allowed);
+                double applied = Math.abs(diff) > allowed ? Math.signum(diff) * allowed : diff;
+                yaw = wrapDeg(yaw + (float) applied);
             }
         }
-        // Motorbremse und Luftwiderstand wirken immer — auch unter Gas oder Bremse
-        speed = approachZero(speed, config.engineBraking);
-        speed -= speed * config.drag;
-        double speedAfterLogic = speed;
 
-        double rad = Math.toRadians(yaw);
-        double dx = -Math.sin(rad) * speed;
-        double dz = Math.cos(rad) * speed;
+        // Simulations-Driftmodus: erzwungene Drehung ohne Fahrer, um Schlupf zu provozieren
+        if (car.isSimDrift() && driver == null) {
+            yaw = wrapDeg(yaw + 6f);
+        }
 
-        double nx = loc.getX() + dx;
-        double nz = loc.getZ() + dz;
-        double ny = loc.getY();
+        // Motorbremse auf die Fahrtrichtungskomponente, Luftwiderstand auf den ganzen Vektor
+        vf = approachZero(vf, config.engineBraking);
+        vx = vf * fx + lx;
+        vz = vf * fz + lz;
+        vx -= vx * config.drag;
+        vz -= vz * config.drag;
 
-        double targetX = nx;
-        double targetY = ny;
-        double targetZ = nz;
+        // Der Weg folgt dem Fahrwerk begrenzt um das laterale Budget mal Nachlauf-Faktor.
+        double abs = Math.hypot(vx, vz);
+        if (abs > SPEED_EPSILON) {
+            double velAngle = wrapDeg((float) Math.toDegrees(Math.atan2(-vx, vz)));
+            double budgetDeg = Math.toDegrees((config.maxLatGrip * grip) / Math.max(abs, SPEED_EPSILON)) * ALIGN_FRACTION;
+            double angleDiff = wrapDeg(yaw - velAngle);
+            double alignStep = Math.abs(angleDiff) > budgetDeg ? Math.signum(angleDiff) * budgetDeg : angleDiff;
+            double newAng = Math.toRadians(wrapDeg(velAngle + (float) alignStep));
+            vx = -Math.sin(newAng) * abs;
+            vz = Math.cos(newAng) * abs;
+        }
+        double velAngleAfter = wrapDeg((float) Math.toDegrees(Math.atan2(-vx, vz)));
+        double slipDeg = Math.abs(wrapDeg(yaw - velAngleAfter));
+
+        double targetX = loc.getX() + vx;
+        double targetZ = loc.getZ() + vz;
+        double targetY = loc.getY();
         boolean stepBlocked = false;
-        if (dx != 0 || dz != 0) {
-            StepResult step = resolveStep(world, loc.getX(), loc.getY(), loc.getZ(), nx, nz);
+        if (vx != 0 || vz != 0) {
+            StepResult step = resolveStep(world, loc.getX(), targetY, loc.getZ(), targetX, targetZ);
             if (step.blocked()) {
                 stepBlocked = true;
-                speed = 0;
-                nx = loc.getX();
-                nz = loc.getZ();
+                targetX = loc.getX();
+                targetZ = loc.getZ();
+                vx = 0;
+                vz = 0;
             } else {
-                ny = step.y();
+                targetY = step.y();
             }
         }
 
-        ny = applyGravity(world, nx, ny, nz, car);
+        targetY = applyGravity(world, targetX, targetY, targetZ, car);
+
+        car.setVelX(vx);
+        car.setVelZ(vz);
+        car.setYaw(yaw);
 
         if (config.debug && driver != null && tickCount % 20 == 0) {
             Block bf = world.getBlockAt(floor(targetX), floor(targetY), floor(targetZ));
             Block bh = world.getBlockAt(floor(targetX), floor(targetY) + 1, floor(targetZ));
-            Block bhu = world.getBlockAt(floor(targetX), floor(targetY) + 2, floor(targetZ));
-            logger.info("[Debug] Kolli: ziel=" + String.format("%.2f %.2f %.2f", targetX, targetY, targetZ)
+            Input input = driver.getCurrentInput();
+            logger.info("[Debug] Fahrer=" + driver.getName()
+                    + " vf=" + String.format("%.3f", vf) + " |v|=" + String.format("%.3f", Math.hypot(vx, vz))
+                    + " slip=" + String.format("%.1f", slipDeg) + "° yaw=" + String.format("%.1f", yaw)
+                    + " fwd=" + input.isForward() + " bwd=" + input.isBackward()
                     + " grip=" + grip + " ground=" + groundMaterial(world, loc.getX(), loc.getY(), loc.getZ()).name()
                     + " feet=" + bf.getType() + "/" + blockedByCar(bf)
-                    + " head=" + bh.getType() + "/" + blockedByCar(bh)
-                    + " headUp=" + bhu.getType() + "/" + blockedByCar(bhu));
+                    + " head=" + bh.getType() + "/" + blockedByCar(bh));
         }
 
-        car.setSpeed(speed);
-        car.setYaw(yaw);
-
-        boolean moved = nx != loc.getX() || ny != loc.getY() || nz != loc.getZ();
+        boolean moved = targetX != loc.getX() || targetY != loc.getY() || targetZ != loc.getZ();
         boolean turned = Math.abs(wrapDeg(yaw - oldYaw)) > 0.01f;
         if (moved || turned) {
-            base.teleport(new Location(world, nx, ny, nz, yaw, 0f));
+            base.teleport(new Location(world, targetX, targetY, targetZ, yaw, 0f));
             if (turned) {
                 // Display rotiert mit, damit das Modell in Fahrtrichtung zeigt
                 car.getModel().setRotation(yaw, 0f);
@@ -151,15 +175,11 @@ public final class DriveTask extends BukkitRunnable {
 
         if (driver != null) {
             if (tickCount % 4 == 0) {
-                sendSpeedometer(driver, speed);
+                sendSpeedometer(driver, Math.hypot(vx, vz), vf);
             }
-            if (config.debug && tickCount % 20 == 0) {
-                Input input = driver.getCurrentInput();
-                logger.info("[Debug] Fahrer=" + driver.getName()
-                        + " speed=" + String.format("%.3f", speed)
-                        + " yaw=" + String.format("%.1f", yaw)
-                        + " fwd=" + input.isForward() + " bwd=" + input.isBackward()
-                        + " pos=" + String.format("%.1f %.1f %.1f", nx, ny, nz));
+            double speedNow = Math.hypot(vx, vz);
+            if (config.understeerSound && slipDeg > SLIP_SOUND_MIN_DEG && speedNow > config.turnMinSpeed * 2) {
+                playUndersteerSound(car, world, loc);
             }
         }
 
@@ -169,13 +189,13 @@ public final class DriveTask extends BukkitRunnable {
             Block bh = world.getBlockAt(floor(targetX), floor(targetY) + 1, floor(targetZ));
             logger.info("[Sim] t=" + car.getSimTicks()
                     + " cars=" + carManager.size()
-                    + " start=" + String.format("%.4f", speedStart)
-                    + " logic=" + String.format("%.4f", speedAfterLogic)
+                    + " start=" + String.format("%.4f", startAbs)
+                    + " vf=" + String.format("%.4f", vf)
+                    + " slip=" + String.format("%.1f", slipDeg)
                     + " blocked=" + stepBlocked
                     + " feet=" + bf.getType() + "/" + blockedByCar(bf)
                     + " head=" + bh.getType() + "/" + blockedByCar(bh)
-                    + " end=" + String.format("%.4f", speed)
-                    + " pos=" + String.format("%.3f %.3f %.3f", nx, ny, nz));
+                    + " pos=" + String.format("%.3f %.3f %.3f", targetX, targetY, targetZ));
             if (car.getSimTicks() == 0) {
                 logger.info("[Sim] fertig, Auto entfernt.");
                 carManager.removeCar(car, false);
@@ -183,48 +203,49 @@ public final class DriveTask extends BukkitRunnable {
         }
     }
 
-    /** Strich-Tacho in der Actionbar: gefüllte Segmente + km/h (1 Block = 1 m). */
-    private void sendSpeedometer(Player driver, double speed) {
-        double maxRef = Math.max(config.maxSpeed, config.maxReverseSpeed);
-        int filled = (int) Math.round(Math.min(1.0, Math.abs(speed) / maxRef) * 10);
-        StringBuilder bar = new StringBuilder(10);
-        for (int i = 0; i < 10; i++) {
-            bar.append(i < filled ? '█' : '░');
-        }
-        int kmh = (int) Math.round(Math.abs(speed) * 72.0);
-        String gear = speed < -0.001 ? " R" : "";
-        driver.sendActionBar(Component.text(bar + "  " + kmh + " km/h" + gear, NamedTextColor.GOLD));
-    }
-
     /**
-     * Arcade-Fahrmodell: Am Stand beschleunigt W vorwärts und S rückwärts; bei Bewegung bremst
-     * die jeweils entgegengesetzte Taste mit voller Bremskraft. Motorbremse/Luftwiderstand laufen zentral.
+     * Arcade-Fahrmodell auf der Fahrtrichtungs-Komponente: Am Stand beschleunigt W vorwärts
+     * und S rückwärts; bei Bewegung bremst die jeweils entgegengesetzte Taste mit voller
+     * Bremskraft. Motorbremse/Luftwiderstand laufen zentral.
      */
-    private double applyInput(double speed, Input input, double grip) {
+    private double applyInput(double vf, Input input, double grip) {
         boolean forward = input.isForward();
         boolean backward = input.isBackward();
 
         if (forward && backward) {
-            speed = approachZero(speed, config.brakeDeceleration * grip);
+            vf = approachZero(vf, config.brakeDeceleration * grip);
         } else if (forward) {
-            if (speed < -0.01) {
-                speed = Math.min(speed + config.brakeDeceleration * grip, 0);
+            if (vf < -0.01) {
+                vf = Math.min(vf + config.brakeDeceleration * grip, 0);
             } else {
-                speed = Math.min(speed + config.acceleration * grip, config.maxSpeed);
+                vf = Math.min(vf + config.acceleration * grip, config.maxSpeed);
             }
         } else if (backward) {
-            if (speed > 0.01) {
-                speed = Math.max(speed - config.brakeDeceleration * grip, 0);
+            if (vf > 0.01) {
+                vf = Math.max(vf - config.brakeDeceleration * grip, 0);
             } else {
-                speed = Math.max(speed - config.reverseAcceleration * grip, -config.maxReverseSpeed);
+                vf = Math.max(vf - config.reverseAcceleration * grip, -config.maxReverseSpeed);
             }
         }
-        return speed;
+        return vf;
+    }
+
+    /** Strich-Tacho in der Actionbar: gefüllte Segmente + km/h (1 Block = 1 m); R bei Rückwärtskomponente. */
+    private void sendSpeedometer(Player driver, double speedAbs, double vf) {
+        double maxRef = Math.max(config.maxSpeed, config.maxReverseSpeed);
+        int filled = (int) Math.round(Math.min(1.0, speedAbs / maxRef) * 10);
+        StringBuilder bar = new StringBuilder(10);
+        for (int i = 0; i < 10; i++) {
+            bar.append(i < filled ? '█' : '░');
+        }
+        int kmh = (int) Math.round(speedAbs * 72.0);
+        String gear = vf < -0.001 ? " R" : "";
+        driver.sendActionBar(Component.text(bar + "  " + kmh + " km/h" + gear, NamedTextColor.GOLD));
     }
 
     /** Geforderte Lenkrate in Grad/Tick: A/D hat Vorrang, sonst Mausfolge (optional abschaltbar);
      *  die Rückwärts-Invertierung gilt für beide Eingabewege, wenn der Spieler sie nicht deaktiviert hat. */
-    private double steerDemand(Input input, Player driver, float yaw, double speed, double allowed) {
+    private double steerDemand(Input input, Player driver, float yaw, double vf, double allowed) {
         boolean left = input.isLeft();
         boolean right = input.isRight();
         double diff;
@@ -239,7 +260,7 @@ public final class DriveTask extends BukkitRunnable {
         } else {
             diff = 0;
         }
-        if (speed < 0 && prefs.reverseInvert(driver.getUniqueId())) {
+        if (vf < 0 && prefs.reverseInvert(driver.getUniqueId())) {
             diff = -diff;
         }
         return diff;
@@ -250,13 +271,6 @@ public final class DriveTask extends BukkitRunnable {
         int gy = (int) Math.floor(y - 0.05);
         return world.getBlockAt(floor(x), gy, floor(z)).getType();
     }
-
-    /**
-     * Prüft, ob die Route frei ist. Bei hohen Geschwindigkeiten werden mehrere Punkte
-     * entlang der Strecke abgetastet, sonst würden dünne Hindernisse durchtunnelt werden.
-     * Blockiert der erste belegte Punkt, versucht das Auto genau dort 1 Block hoch zu fahren.
-     */
-    private static final double SAMPLE_STEP = 0.4;
 
     private StepResult resolveStep(World world, double fromX, double fromY, double fromZ,
                                    double toX, double toZ) {
@@ -341,9 +355,6 @@ public final class DriveTask extends BukkitRunnable {
     }
 
     private void playUndersteerSound(Car car, World world, Location loc) {
-        if (!config.understeerSound) {
-            return;
-        }
         long now = System.currentTimeMillis();
         if (now - car.getLastUndersteerSoundMs() < UNDERSTEER_SOUND_COOLDOWN_MS) {
             return;
@@ -366,6 +377,16 @@ public final class DriveTask extends BukkitRunnable {
             angle -= 360f;
         } else if (angle <= -180f) {
             angle += 360f;
+        }
+        return angle;
+    }
+
+    private double wrapDeg(double angle) {
+        angle %= 360.0;
+        if (angle > 180.0) {
+            angle -= 360.0;
+        } else if (angle <= -180.0) {
+            angle += 360.0;
         }
         return angle;
     }

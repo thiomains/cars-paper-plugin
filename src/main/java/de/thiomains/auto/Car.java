@@ -7,8 +7,9 @@ import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 
 /**
- * Fahrzustand eines Autos: die drei Entities plus dynamische Größen.
- * speed ist vorzeichenbehaftet (negativ = Rückwärtsgang), Einheit Blöcke pro Tick.
+ * Fahrzustand eines Autos: die drei Entities plus physikalische Größen.
+ * Bewegung ist ein Geschwindigkeitsvektor (velX/velZ) in Blöcken pro Tick;
+ * die Fahrtrichtungs-Komponente entlang des Yaw bestimmt über Vor-/Rückwärtsfahrt.
  */
 public final class Car {
 
@@ -16,11 +17,13 @@ public final class Car {
     private ItemDisplay model;
     private Interaction hitbox;
 
-    private double speed;
+    private double velX;
+    private double velZ;
     private float yaw;
     private double fallSpeed;
     private long lastUndersteerSoundMs;
     private int simTicks;
+    private boolean simDrift;
 
     public Car(ArmorStand base, ItemDisplay model, Interaction hitbox) {
         this.base = base;
@@ -49,12 +52,26 @@ public final class Car {
         this.hitbox = hitbox;
     }
 
-    public double getSpeed() {
-        return speed;
+    public double getVelX() {
+        return velX;
     }
 
-    public void setSpeed(double speed) {
-        this.speed = speed;
+    public void setVelX(double velX) {
+        this.velX = velX;
+    }
+
+    public double getVelZ() {
+        return velZ;
+    }
+
+    public void setVelZ(double velZ) {
+        this.velZ = velZ;
+    }
+
+    /** Komfortmethode für die Simulation: setzt Geschwindigkeit entlang +Z (Sim-Spawn-Yaw 0). */
+    public void setSpeed(double speedAlongZ) {
+        this.velX = 0;
+        this.velZ = speedAlongZ;
     }
 
     public float getYaw() {
@@ -87,6 +104,14 @@ public final class Car {
 
     public void setSimTicks(int simTicks) {
         this.simTicks = simTicks;
+    }
+
+    public boolean isSimDrift() {
+        return simDrift;
+    }
+
+    public void setSimDrift(boolean simDrift) {
+        this.simDrift = simDrift;
     }
 
     /** Der fahrende Spieler (Passagier auf dem ArmorStand), oder null. */
