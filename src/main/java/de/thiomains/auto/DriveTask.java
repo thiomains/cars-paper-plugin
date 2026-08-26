@@ -59,6 +59,8 @@ public final class DriveTask extends BukkitRunnable {
     private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
     private static final double MAX_SPIN = 18.0; // deg/tick, gegen unansehnliche Vollrotation
     private static final double SPIN_DEADBAND = 0.05;
+    private static final double PITCH_ACCEL_DEG = 150.0; // Grad pro Bl/tick² Pedal-Kraft (Squat/Dive), gedeckelt
+    private static final double PITCH_ACCEL_MAX_DEG = 8.0;
     private static final double YAW_SMOOTH_IN = 0.30;
     private static final double YAW_SMOOTH_OUT = 0.40;
     private static final double YAW_DEADBAND = 0.03;
@@ -152,6 +154,7 @@ public final class DriveTask extends BukkitRunnable {
         boolean pedals = input != null && (input.isForward() || input.isBackward());
         boolean handbrake = grounded && input != null && input.isJump() && startAbs > SPEED_EPSILON;
         double steerDemandDeg = 0.0;
+        double vfBeforeForces = vf;
 
         if (driver != null && grounded) {
             if (handbrake) {
@@ -222,6 +225,9 @@ public final class DriveTask extends BukkitRunnable {
         if (grounded && !pedals) {
             vf = approachZero(vf, config.engineBraking * grip);
         }
+        // Longitudinale Pedal-Kraft des Ticks (positiv = Schub, negativ = Bremse/Handbremse);
+        // treibt Modell-Squat/Dive und den Laengs-Anteil im Grip-Budget der Actionbar.
+        double longForce = vf - vfBeforeForces;
         vx = vf * fx + lx;
         vz = vf * fz + lz;
         vx -= vx * config.drag;
@@ -389,13 +395,15 @@ public final class DriveTask extends BukkitRunnable {
             }
         }
 
-        // Modell-Neigung (Pitch aus echter Tick-Steigung) und Quer-Neigung in Kurven (Roll aus
-        // Tempo × Drehrate), beides EMA-geglaettet. Reine Optik — die Physik bleibt davon
-        // unberuehrt. ACHTUNG: Achsen-Vorzeichen headless nicht verifizierbar; bei falscher
-        // Richtung in der Sichtpruefung die Vorzeichen in pitch/roll flippen.
+        // Modell-Neigung und Quer-Neigung, beides EMA-geglaettet. Reine Optik — die Physik
+        // bleibt davon unberuehrt. Pitch = Steigung (Vorzeichen nach Sichtpruefung geflippt)
+        // plus Squat/Dive aus der Pedal-Kraft (Gas: Nase hoch, Bremse: Nase runter);
+        // Roll = Tempo × Drehrate. Die Roll-Achse war nach Sichtpruefung korrekt, Pitch war
+        // invertiert — bei erneuter Abweichung die Vorzeichen erneut pruefen.
         double horizDist = Math.hypot(targetX - loc.getX(), targetZ - loc.getZ());
-        double pitchGoal = grounded && horizDist > 1.0e-9
-                ? Math.toDegrees(Math.atan2(targetY - loc.getY(), horizDist)) : 0.0;
+        double pitchGoal = (grounded && horizDist > 1.0e-9
+                ? -Math.toDegrees(Math.atan2(targetY - loc.getY(), horizDist)) : 0.0)
+                + clamp(longForce * PITCH_ACCEL_DEG, -PITCH_ACCEL_MAX_DEG, PITCH_ACCEL_MAX_DEG);
         double pitch = clamp(car.getLastPitchDeg() + (pitchGoal - car.getLastPitchDeg()) * 0.3, -25.0, 25.0);
         double rollGoal = clamp(-200.0 * Math.hypot(vx, vz) * Math.toRadians(car.getYawVel()), -12.0, 12.0);
         double roll = clamp(car.getLastRollDeg() + (rollGoal - car.getLastRollDeg()) * 0.3, -12.0, 12.0);
