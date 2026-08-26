@@ -10,7 +10,7 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 7
+config-version: 8
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 162.0
@@ -39,9 +39,17 @@ max-lateral-grip: 22.0
 turn-curvature: 40.0
 # Absolute Mindestgeschwindigkeit in km/h, ab der gelenkt wird (an Wandkontakt darf im Stand rangiert werden)
 turn-min-speed: 3.6
-# Bergab-Schub in m/s²: wird pro eingerasteter Abstiegsstufe in Fahrtrichtung addiert
-# (schaltet Kriech-Lenkung und Vortrieb bergab wieder frei)
+# Bergab-Schub in m/s²: skaliert mit dem echten Gefälle des Ticks (volle Wirkung ab 0,5 Block/Tick)
 downhill-assist: 6.0
+# Steigungs-Energie in Prozent: 100 = physikalisch (bergauf kostet Tempo, bergab gewinnt es),
+# 0 = Steigungen sind gratis
+slope-resistance: 100.0
+# Wand-Abpraller in Prozent der Aufprallgeschwindigkeit (serverseitig auf 60 % gedeckelt)
+crash-restitution: 25.0
+# Staerke des Crash-Andrehens in Prozent (100 = Standard; dreht die Karosserie um den Aufprallpunkt)
+crash-spin: 100.0
+# Maximale Sinkgeschwindigkeit in Wasser in km/h (Wasser traegt nicht, bremst aber den Fall)
+max-sink-speed: 9.0
 # Grip-Werte in Prozent: Betonfarben | Gras/Erde/Schlamm/Schnee | alle Eisarten | sonstige Blöcke
 grip-concrete: 100.0
 grip-grass: 50.0

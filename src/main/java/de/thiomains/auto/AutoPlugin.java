@@ -7,7 +7,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public final class AutoPlugin extends JavaPlugin {
 
-    private static final int CONFIG_VERSION = 7;
+    private static final int CONFIG_VERSION = 8;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;

@@ -260,18 +260,18 @@ public final class CarCommand implements BasicCommand {
     }
 
     private String humanValue(String key) {
-        return plugin.getConfig().getDouble(key) + unitSuffix(key);
+        return CarConfig.clampHumanValue(key, plugin.getConfig().getDouble(key)) + unitSuffix(key);
     }
 
     private String unitSuffix(String key) {
         return switch (key) {
-            case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed" -> " km/h";
+            case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed", "max-sink-speed" -> " km/h";
             case "acceleration", "reverse-acceleration", "brake-deceleration", "handbrake-deceleration",
-                 "engine-braking" -> " m/s²";
+                 "engine-braking", "max-lateral-grip", "downhill-assist" -> " m/s²";
             case "drag" -> " %/s";
-            case "max-lateral-grip" -> " m/s²";
             case "turn-curvature" -> " °/m";
-            case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip" -> " %";
+            case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
+                 "slope-resistance", "crash-restitution", "crash-spin" -> " %";
             default -> "";
         };
     }
