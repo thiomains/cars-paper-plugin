@@ -399,13 +399,14 @@ public final class DriveTask extends BukkitRunnable {
 
         // Modell-Neigung und Quer-Neigung, beides EMA-geglaettet. Reine Optik — die Physik
         // bleibt davon unberuehrt. Pitch = Steigung (Vorzeichen nach Sichtpruefung geflippt)
-        // plus Squat/Dive aus der Pedal-Kraft (Gas: Nase hoch, Bremse: Nase runter);
-        // Roll = Tempo × Drehrate. Die Roll-Achse war nach Sichtpruefung korrekt, Pitch war
-        // invertiert — bei erneuter Abweichung die Vorzeichen erneut pruefen.
+        // plus Squat/Dive aus der Pedal-Kraft (Gas: Nase hoch, Bremse: Nase runter); Roll =
+        // Tempo × Drehrate. Sichtpruefungs-Stand: Steigungs-Term und Roll korrekt, der
+        // Pedal-Term stand Kopf und ist daher invertiert (Minus davor!) — nicht die Achsen
+        // pauschal flippen.
         double horizDist = Math.hypot(targetX - loc.getX(), targetZ - loc.getZ());
         double pitchGoal = (grounded && horizDist > 1.0e-9
                 ? -Math.toDegrees(Math.atan2(targetY - loc.getY(), horizDist)) : 0.0)
-                + clamp(longForce * PITCH_ACCEL_DEG, -PITCH_ACCEL_MAX_DEG, PITCH_ACCEL_MAX_DEG);
+                - clamp(longForce * PITCH_ACCEL_DEG, -PITCH_ACCEL_MAX_DEG, PITCH_ACCEL_MAX_DEG);
         double pitch = clamp(car.getLastPitchDeg() + (pitchGoal - car.getLastPitchDeg()) * 0.3, -25.0, 25.0);
         double rollGoal = clamp(-200.0 * Math.hypot(vx, vz) * Math.toRadians(car.getYawVel()), -12.0, 12.0);
         double roll = clamp(car.getLastRollDeg() + (rollGoal - car.getLastRollDeg()) * 0.3, -12.0, 12.0);
