@@ -32,7 +32,7 @@ import java.util.List;
  */
 public final class DriveTask extends BukkitRunnable {
 
-    private static final double UNDERSTEER_SOUND_COOLDOWN_MS = 900;
+    private static final long UNDERSTEER_SOUND_COOLDOWN_TICKS = 18;
     private static final double GRAVITY_ACCEL = 0.08;
     private static final double ALIGN_FRACTION = 0.65;
     private static final double FRICTION_FRACTION = 0.5;
@@ -44,6 +44,7 @@ public final class DriveTask extends BukkitRunnable {
     private static final double LAT_HALF = 1.05;
     private static final double CAR_COLLISION_RADIUS = 1.8;
     private static final double STANDSTILL_SPEED = 0.007; // ~0,5 km/h
+    private static final double STANDSTILL_MIN_GRIP = 0.4; // darunter (glatt) rollt das Auto aus statt zu rasten
     private static final double WATER_DRAG = 0.10;
     private static final double LANDING_SOUND_MIN_FALL = 0.5; // ~36 km/h vertikal
     private static final double LANDING_SPEED_KEEP = 0.7;
@@ -213,9 +214,10 @@ public final class DriveTask extends BukkitRunnable {
                     * clamp(1.0 - vf / Math.max(config.maxSpeed, 1.0e-9), 0.0, 1.0), config.maxSpeed);
         }
 
-        // Motorbremse nur bei losgelassenem Pedal, Luftwiderstand immer
+        // Motorbremse nur bei losgelassenem Pedal, Luftwiderstand immer.
+        // Die Motorbremse wirkt ueber die Raeder: bei wenig Grip bremst sie entsprechend wenig.
         if (grounded && !pedals) {
-            vf = approachZero(vf, config.engineBraking);
+            vf = approachZero(vf, config.engineBraking * grip);
         }
         vx = vf * fx + lx;
         vz = vf * fz + lz;
@@ -252,8 +254,9 @@ public final class DriveTask extends BukkitRunnable {
             }
         }
 
-        // Standfest: ohne Pedal unterhalb der Kriechgrenze hart anhalten
-        if (grounded && !pedals && Math.hypot(vx, vz) < STANDSTILL_SPEED) {
+        // Standfest: ohne Pedal unterhalb der Kriechgrenze hart anhalten — aber nur, wenn die
+        // Reifen tragen koennen; auf Glatteis laeuft der Restschwung stattdessen natuerlich aus.
+        if (grounded && !pedals && grip >= STANDSTILL_MIN_GRIP && Math.hypot(vx, vz) < STANDSTILL_SPEED) {
             vx = 0;
             vz = 0;
         }
@@ -762,6 +765,10 @@ public final class DriveTask extends BukkitRunnable {
                 return new GravityResult(supportTop(b, fy), false);
             }
             newY = candidate;
+            // Wasser traegt nicht, bremst aber den Fall asymptotisch Richtung max-sink-speed
+            if (world.getBlockAt(floor(x), floor(candidate), floor(z)).getType() == Material.WATER) {
+                fallSpeed = config.maxSinkSpeed + (fallSpeed - config.maxSinkSpeed) * 0.85;
+            }
             remaining -= step;
         }
         car.setFallSpeed(fallSpeed);
@@ -817,11 +824,10 @@ public final class DriveTask extends BukkitRunnable {
     }
 
     private void playUndersteerSound(Car car, World world, Location loc) {
-        long now = System.currentTimeMillis();
-        if (now - car.getLastUndersteerSoundMs() < UNDERSTEER_SOUND_COOLDOWN_MS) {
+        if (tickCount - car.getLastUndersteerSoundTick() < UNDERSTEER_SOUND_COOLDOWN_TICKS) {
             return;
         }
-        car.setLastUndersteerSoundMs(now);
+        car.setLastUndersteerSoundTick(tickCount);
         world.playSound(loc, Sound.ENTITY_HORSE_DEATH, 0.5f, 0.0f);
     }
 

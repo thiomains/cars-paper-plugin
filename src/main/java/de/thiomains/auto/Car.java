@@ -24,7 +24,7 @@ public final class Car {
     private double spinVel;
     private boolean lastStepBlocked;
     private double fallSpeed;
-    private long lastUndersteerSoundMs;
+    private long lastUndersteerSoundTick = -1000;
     private int simTicks;
     private boolean simDrift;
     private boolean simDrive;
@@ -122,12 +122,12 @@ public final class Car {
         this.fallSpeed = fallSpeed;
     }
 
-    public long getLastUndersteerSoundMs() {
-        return lastUndersteerSoundMs;
+    public long getLastUndersteerSoundTick() {
+        return lastUndersteerSoundTick;
     }
 
-    public void setLastUndersteerSoundMs(long lastUndersteerSoundMs) {
-        this.lastUndersteerSoundMs = lastUndersteerSoundMs;
+    public void setLastUndersteerSoundTick(long lastUndersteerSoundTick) {
+        this.lastUndersteerSoundTick = lastUndersteerSoundTick;
     }
 
     public int getSimTicks() {
