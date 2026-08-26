@@ -1,0 +1,11 @@
+name: Auto
+version: ${project.version}
+main: de.thiomains.auto.AutoPlugin
+description: Fahrbare Autos mit realistischer Fahrphysik
+authors:
+  - thiomains
+api-version: '26.2'
+permissions:
+  auto.give:
+    description: Erlaubt /auto give
+    default: op

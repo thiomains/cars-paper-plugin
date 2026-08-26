@@ -1,0 +1,41 @@
+# ──────────────────────────────────────────────────────────────
+#              Auto-Plugin Einstellungen (menschenlesbar)
+# ──────────────────────────────────────────────────────────────
+# Einheiten:
+#   Geschwindigkeiten:        km/h        (162 km/h ist Standard)
+#   Beschleunigung/Bremsung:  m/s²        (Meter pro Sekunde zum Quadrat)
+#   Luftwiderstand:           % Geschwindigkeitsverlust pro Sekunde
+#   Lenkrate:                 Grad pro Sekunde
+#   Grip / Lenk-Faktor:       Prozent     (100 = perfekt)
+#
+# Wird nach Einheiten-Änderungen automatisch neu erzeugt (alte Datei wird gesichert).
+config-version: 3
+
+# Max. Vorwärtsgeschwindigkeit in km/h
+max-speed: 162.0
+# Max. Rückwärtsgeschwindigkeit in km/h
+max-reverse-speed: 8.6
+# Beschleunigung vorwärts in m/s² (bei 100 % Grip)
+acceleration: 12.0
+# Beschleunigung rückwärts in m/s² - bewusst deutlich träger als vorwärts
+reverse-acceleration: 3.2
+# Bremskraft in m/s² (bei 100 % Grip; weniger Grip verlängert den Bremsweg)
+brake-deceleration: 24.0
+# Motorbremse in m/s² (leichte Abbremsung ohne Gas/Bremse)
+engine-braking: 1.6
+# Luftwiderstand: % der Geschwindigkeit, die pro Sekunde verloren geht
+drag: 1.0
+# Max. Lenkrate in Grad pro Sekunde (bei 100 % Grip)
+turn-rate-max: 140.0
+# Absolute Mindestgeschwindigkeit in km/h, ab der gelenkt wird (im Stillstand dreht das Auto nicht)
+turn-min-speed: 3.6
+# Anteil der Max-Lenkrate in %, der bereits im Kriechtempo verfügbar ist (für enges Rangieren)
+turn-low-speed-factor: 45.0
+# Grip-Werte in Prozent: alle Betonfarben | Gras/Erde/Schlamm/Schnee | sonstige Blöcke
+grip-concrete: 100.0
+grip-grass: 50.0
+grip-default: 80.0
+# Quietsch-Sound bei Untersteuern
+understeer-sound: true
+# Debug-Logging (Fahrzustand, Ein-/Aussteigen) in die Konsole
+debug: false
