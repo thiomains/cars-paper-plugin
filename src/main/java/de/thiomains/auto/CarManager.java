@@ -207,8 +207,8 @@ public final class CarManager {
 
     private Interaction spawnHitbox(Location location) {
         return location.getWorld().spawn(location, Interaction.class, interaction -> {
-            interaction.setInteractionWidth(2.4f);
-            interaction.setInteractionHeight(1.95f);
+            interaction.setInteractionWidth(2.5f);
+            interaction.setInteractionHeight(1.8f);
             interaction.setSilent(true);
             mark(interaction, carPartKey);
         });

@@ -43,9 +43,9 @@ public final class DriveTask extends BukkitRunnable {
     private static final double SLIP_SOUND_MIN_DEG = 12.0;
     private static final double SAMPLE_STEP = 0.4;
     private static final double MAX_STEP = 1.0;
-    private static final double LONG_HALF = 1.35;
-    private static final double LAT_HALF = 1.05;
-    private static final double CAR_COLLISION_RADIUS = 1.8;
+    private static final double LONG_HALF = 1.25;
+    private static final double LAT_HALF = 0.9;
+    private static final double CAR_COLLISION_RADIUS = 1.4;
     private static final double STANDSTILL_SPEED = 0.007; // ~0,5 km/h
     private static final double STANDSTILL_MIN_GRIP = 0.4; // darunter (glatt) rollt das Auto aus statt zu rasten
     private static final double WATER_DRAG = 0.10;
