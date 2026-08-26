@@ -16,7 +16,7 @@ import java.util.UUID;
  */
 public final class PlayerPrefs {
 
-    private static final Prefs DEFAULT = new Prefs(true, true, true, true, true);
+    private static final Prefs DEFAULT = new Prefs(true, true, true, true, false);
 
     private record Prefs(boolean mouseSteer, boolean reverseInvert, boolean actionbar,
                          boolean actionbarSpeed, boolean actionbarGrip) {
@@ -111,7 +111,7 @@ public final class PlayerPrefs {
                         invert,
                         yml.getBoolean(key + ".actionbar", true),
                         yml.getBoolean(key + ".actionbar_speed", true),
-                        yml.getBoolean(key + ".actionbar_grip", true)));
+                        yml.getBoolean(key + ".actionbar_grip", false)));
             } catch (IllegalArgumentException ignored) {
                 plugin.getLogger().warning("Ungültiger Eintrag in prefs.yml: " + key);
             }
