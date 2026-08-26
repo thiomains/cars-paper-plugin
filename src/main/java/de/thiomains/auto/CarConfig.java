@@ -3,12 +3,23 @@ package de.thiomains.auto;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.List;
+
 /**
  * Physik-Werte, intern in der Tick-Einheit (Blöcke/Tick) gehalten. Die config.yml
  * verwendet menschenlesbare Einheiten (km/h, m/s², %), reload() rechnet um;
- * /auto config set wirkt sofort.
+ * /auto config set wirkt sofort. Die Key-Listen teilen sich Command-Komplettierung
+ * und Config-Migration.
  */
 public final class CarConfig {
+
+    public static final List<String> NUMBER_KEYS = List.of(
+            "max-speed", "max-reverse-speed", "acceleration", "reverse-acceleration",
+            "brake-deceleration", "engine-braking", "drag", "max-lateral-grip",
+            "turn-rate-max", "turn-min-speed",
+            "grip-concrete", "grip-grass", "grip-default"
+    );
+    public static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug");
 
     public double maxSpeed;
     public double maxReverseSpeed;
@@ -17,9 +28,9 @@ public final class CarConfig {
     public double brakeDeceleration;
     public double engineBraking;
     public double drag;
+    public double maxLatGrip;
     public double turnRateMax;
     public double turnMinSpeed;
-    public double turnLowSpeedFactor;
     public double gripConcrete;
     public double gripGrass;
     public double gripDefault;
@@ -42,9 +53,9 @@ public final class CarConfig {
         brakeDeceleration = metersPerSecondSquared(c.getDouble("brake-deceleration", 24.0));
         engineBraking = metersPerSecondSquared(c.getDouble("engine-braking", 1.6));
         drag = percentPerSecondToTick(c.getDouble("drag", 1.0));
+        maxLatGrip = metersPerSecondSquared(c.getDouble("max-lateral-grip", 14.0));
         turnRateMax = c.getDouble("turn-rate-max", 140.0) / 20.0;
         turnMinSpeed = kmh(c.getDouble("turn-min-speed", 3.6));
-        turnLowSpeedFactor = c.getDouble("turn-low-speed-factor", 45.0) / 100.0;
         gripConcrete = c.getDouble("grip-concrete", 100.0) / 100.0;
         gripGrass = c.getDouble("grip-grass", 50.0) / 100.0;
         gripDefault = c.getDouble("grip-default", 80.0) / 100.0;

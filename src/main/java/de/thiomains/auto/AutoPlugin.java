@@ -7,7 +7,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public final class AutoPlugin extends JavaPlugin {
 
-    private static final int CONFIG_VERSION = 3;
+    private static final int CONFIG_VERSION = 4;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;
@@ -63,21 +63,45 @@ public final class AutoPlugin extends JavaPlugin {
         getLogger().info("Auto-Plugin aktiviert.");
     }
 
-    /** Sichert veraltete Configs nach Einheiten-Änderungen und erzeugt frische Defaults. */
+    /** Sichert veraltete Configs nach Schlüssel-/Einheiten-Änderungen, erzeugt frische Defaults
+     *  und übernimmt dabei alle Werte von Keys, die es in beiden Versionen gibt. */
     private void ensureConfigIsCurrent() {
         saveDefaultConfig();
-        if (getConfig().getInt("config-version", -1) == CONFIG_VERSION) {
+        int stored = getConfig().getInt("config-version", -1);
+        if (stored == CONFIG_VERSION) {
             return;
         }
         java.io.File file = new java.io.File(getDataFolder(), "config.yml");
+        org.bukkit.configuration.file.YamlConfiguration old = file.exists()
+                ? org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file) : null;
         if (file.exists()) {
             java.io.File backup = new java.io.File(getDataFolder(), "config.veraltet.yml");
             if (file.renameTo(backup)) {
                 getLogger().warning("Alte config.yml nach " + backup.getName()
-                        + " verschoben (Einheiten geändert). Neue config.yml wird erzeugt.");
+                        + " verschoben (Format geändert). Neue config.yml wird erzeugt.");
             }
         }
         saveResource("config.yml", false);
+        reloadConfig();
+        if (old != null && stored >= 3) {
+            int carried = 0;
+            for (String key : CarConfig.NUMBER_KEYS) {
+                if (old.isSet(key)) {
+                    getConfig().set(key, old.getDouble(key));
+                    carried++;
+                }
+            }
+            for (String key : CarConfig.BOOL_KEYS) {
+                if (old.isSet(key)) {
+                    getConfig().set(key, old.getBoolean(key));
+                    carried++;
+                }
+            }
+            if (carried > 0) {
+                saveConfig();
+                getLogger().info(carried + " Einstellungen aus der alten Konfiguration übernommen.");
+            }
+        }
     }
 
     @Override
