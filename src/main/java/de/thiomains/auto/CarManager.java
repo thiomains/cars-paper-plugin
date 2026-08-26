@@ -29,7 +29,12 @@ import java.util.UUID;
 public final class CarManager {
 
     private static final float MODEL_SCALE = 1.5f;
-    private static final float MODEL_Y_OFFSET = 0.6f;
+    // Modell-Hoehenoffset; wird um die Sitzerhoehung (SEAT_SCALE, ~+0,1 Blöcke) nach unten
+    // gegengehalten, damit das Modell trotz hoeherer Stand-Skalierung optisch gleich bleibt.
+    private static final float MODEL_Y_OFFSET = 0.5f;
+    // Sitzposition: Passagiere sitzen auf der skalierten Stand-Hoehe; 0,1131 ≈ +0,1 Blöcke
+    // gegenüber dem bisherigen 0,0625 (Stand-Hoehe 1,975 × Skala).
+    private static final double SEAT_SCALE = 0.1131;
 
     private final JavaPlugin plugin;
     private final NamespacedKey carKey;
@@ -64,7 +69,7 @@ public final class CarManager {
             stand.setCollidable(false);
             var scale = stand.getAttribute(Attribute.SCALE);
             if (scale != null) {
-                scale.setBaseValue(0.0625);
+                scale.setBaseValue(SEAT_SCALE);
             }
             mark(stand, carKey);
         });
@@ -153,8 +158,8 @@ public final class CarManager {
             return;
         }
         var scaleAttr = stand.getAttribute(Attribute.SCALE);
-        if (scaleAttr != null && scaleAttr.getBaseValue() != 0.0625) {
-            scaleAttr.setBaseValue(0.0625);
+        if (scaleAttr != null && scaleAttr.getBaseValue() != SEAT_SCALE) {
+            scaleAttr.setBaseValue(SEAT_SCALE);
         }
         ItemDisplay model = null;
         Interaction hitbox = null;
