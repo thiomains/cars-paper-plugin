@@ -20,15 +20,10 @@ import java.util.List;
  */
 public final class CarCommand implements BasicCommand {
 
-    private static final List<String> NUMBER_KEYS = List.of(
-            "max-speed", "max-reverse-speed", "acceleration", "reverse-acceleration",
-            "brake-deceleration", "engine-braking", "drag",
-            "turn-rate-max", "turn-min-speed", "turn-low-speed-factor",
-            "grip-concrete", "grip-grass", "grip-default"
-    );
-    private static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug");
+    private static final List<String> NUMBER_KEYS = CarConfig.NUMBER_KEYS;
+    private static final List<String> BOOL_KEYS = CarConfig.BOOL_KEYS;
     private static final List<String> MAX_100_KEYS = List.of(
-            "drag", "turn-low-speed-factor", "grip-concrete", "grip-grass", "grip-default");
+            "drag", "grip-concrete", "grip-grass", "grip-default");
 
     private final JavaPlugin plugin;
     private final CarManager carManager;
@@ -206,13 +201,16 @@ public final class CarCommand implements BasicCommand {
         }
         world.getBlockAt(baseX, groundY, baseZ + 6).setType(org.bukkit.Material.STONE);
         world.getBlockAt(baseX, groundY + 1, baseZ + 6).setType(org.bukkit.Material.STONE);
-        org.bukkit.Location loc = new org.bukkit.Location(world, baseX + 0.5, groundY, baseZ + 0.5, 0f, 0f);
-        Car car = carManager.spawnCar(loc, 0f);
-        car.setSpeed(simSpeed);
-        car.setSimTicks(100);
-        sender.sendMessage(Component.text("Simulation mit speed=" + simSpeed
-                + " gestartet (Wand bei z=" + (baseZ + 6) + ", Strecke y=" + groundY + ").", NamedTextColor.GREEN));
-    }
+            org.bukkit.Location loc = new org.bukkit.Location(world, baseX + 0.5, groundY, baseZ + 0.5, 0f, 0f);
+            Car car = carManager.spawnCar(loc, 0f);
+            car.setSpeed(simSpeed);
+            car.setSimTicks(100);
+            boolean drift = args.length >= 3 && args[2].equalsIgnoreCase("drift");
+            car.setSimDrift(drift);
+            sender.sendMessage(Component.text("Simulation mit speed=" + simSpeed + (drift ? " + Drift" : "")
+                    + " gestartet (Wand bei z=" + (baseZ + 6) + ", Strecke y=" + groundY + ").", NamedTextColor.GREEN));
+            return;
+        }
 
     private String humanValue(String key) {
         return plugin.getConfig().getDouble(key) + unitSuffix(key);
@@ -223,8 +221,9 @@ public final class CarCommand implements BasicCommand {
             case "max-speed", "max-reverse-speed", "turn-min-speed" -> " km/h";
             case "acceleration", "reverse-acceleration", "brake-deceleration", "engine-braking" -> " m/s²";
             case "drag" -> " %/s";
+            case "max-lateral-grip" -> " m/s²";
             case "turn-rate-max" -> " °/s";
-            case "turn-low-speed-factor", "grip-concrete", "grip-grass", "grip-default" -> " %";
+            case "grip-concrete", "grip-grass", "grip-default" -> " %";
             default -> "";
         };
     }
