@@ -28,10 +28,11 @@ import java.util.UUID;
  */
 public final class CarManager {
 
-    private static final float MODEL_SCALE = 1.5f;
+    static final float MODEL_SCALE = 1.5f;
     // Modell-Hoehenoffset; wird um die Sitzerhoehung (SEAT_SCALE, ~+0,1 Blöcke) nach unten
     // gegengehalten, damit das Modell trotz hoeherer Stand-Skalierung optisch gleich bleibt.
-    private static final float MODEL_Y_OFFSET = 0.5f;
+    // Package-visible, damit DriveTask die Transformation pro Tick reproduzieren kann.
+    static final float MODEL_Y_OFFSET = 0.5f;
     // Sitzposition: Passagiere sitzen auf der skalierten Stand-Hoehe; 0,1131 ≈ +0,1 Blöcke
     // gegenüber dem bisherigen 0,0625 (Stand-Hoehe 1,975 × Skala).
     private static final double SEAT_SCALE = 0.1131;

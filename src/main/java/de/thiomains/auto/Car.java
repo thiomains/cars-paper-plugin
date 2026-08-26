@@ -22,6 +22,8 @@ public final class Car {
     private float yaw;
     private double yawVel;
     private double spinVel;
+    private double lastPitchDeg;
+    private double lastRollDeg;
     private boolean lastStepBlocked;
     private double fallSpeed;
     private long lastUndersteerSoundTick = -1000;
@@ -103,6 +105,23 @@ public final class Car {
 
     public void setSpinVel(double spinVel) {
         this.spinVel = spinVel;
+    }
+
+    /** Zuletzt ans Modell übertragene Pitch/Roll-Winkel (Grad), EMA-geglättet. */
+    public double getLastPitchDeg() {
+        return lastPitchDeg;
+    }
+
+    public void setLastPitchDeg(double lastPitchDeg) {
+        this.lastPitchDeg = lastPitchDeg;
+    }
+
+    public double getLastRollDeg() {
+        return lastRollDeg;
+    }
+
+    public void setLastRollDeg(double lastRollDeg) {
+        this.lastRollDeg = lastRollDeg;
     }
 
     /** true, wenn der letzte Tick Blockkontakt hatte (erlaubt Rangieren im Stand). */

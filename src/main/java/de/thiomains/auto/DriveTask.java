@@ -12,6 +12,9 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.BoundingBox;
+import org.bukkit.util.Transformation;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -384,6 +387,27 @@ public final class DriveTask extends BukkitRunnable {
                 // Display rotiert mit, damit das Modell in Fahrtrichtung zeigt
                 car.getModel().setRotation(yaw, 0f);
             }
+        }
+
+        // Modell-Neigung (Pitch aus echter Tick-Steigung) und Quer-Neigung in Kurven (Roll aus
+        // Tempo × Drehrate), beides EMA-geglaettet. Reine Optik — die Physik bleibt davon
+        // unberuehrt. ACHTUNG: Achsen-Vorzeichen headless nicht verifizierbar; bei falscher
+        // Richtung in der Sichtpruefung die Vorzeichen in pitch/roll flippen.
+        double horizDist = Math.hypot(targetX - loc.getX(), targetZ - loc.getZ());
+        double pitchGoal = grounded && horizDist > 1.0e-9
+                ? Math.toDegrees(Math.atan2(targetY - loc.getY(), horizDist)) : 0.0;
+        double pitch = clamp(car.getLastPitchDeg() + (pitchGoal - car.getLastPitchDeg()) * 0.3, -25.0, 25.0);
+        double rollGoal = clamp(-200.0 * Math.hypot(vx, vz) * Math.toRadians(car.getYawVel()), -12.0, 12.0);
+        double roll = clamp(car.getLastRollDeg() + (rollGoal - car.getLastRollDeg()) * 0.3, -12.0, 12.0);
+        if (Math.abs(pitch - car.getLastPitchDeg()) > 0.5 || Math.abs(roll - car.getLastRollDeg()) > 0.5) {
+            car.getModel().setTransformation(new Transformation(
+                    new Vector3f(0f, CarManager.MODEL_Y_OFFSET, 0f),
+                    new Quaternionf().rotationX((float) Math.toRadians(pitch))
+                            .rotateZ((float) Math.toRadians(roll)),
+                    new Vector3f(CarManager.MODEL_SCALE, CarManager.MODEL_SCALE, CarManager.MODEL_SCALE),
+                    new Quaternionf()));
+            car.setLastPitchDeg(pitch);
+            car.setLastRollDeg(roll);
         }
 
         if (driver != null) {
