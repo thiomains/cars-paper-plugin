@@ -23,7 +23,7 @@ public final class CarCommand implements BasicCommand {
     private static final List<String> NUMBER_KEYS = CarConfig.NUMBER_KEYS;
     private static final List<String> BOOL_KEYS = CarConfig.BOOL_KEYS;
     private static final List<String> MAX_100_KEYS = List.of(
-            "drag", "grip-concrete", "grip-grass", "grip-default");
+            "drag", "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip");
 
     private final JavaPlugin plugin;
     private final CarManager carManager;
@@ -37,7 +37,8 @@ public final class CarCommand implements BasicCommand {
         this.prefs = prefs;
     }
 
-    private static final List<String> PREF_KEYS = List.of("mouse_steer", "reverse_invert");
+    private static final List<String> PREF_KEYS = List.of(
+            "mouse_steer", "reverse_invert", "actionbar", "actionbar_speed", "actionbar_grip");
 
     @Override
     public void execute(CommandSourceStack stack, String[] args) {
@@ -59,7 +60,7 @@ public final class CarCommand implements BasicCommand {
             return;
         }
         sender.sendMessage(Component.text(
-                "Verwendung: /auto give | /auto config get [key] | /auto config set <key> <wert> | /auto prefs <key> <on|off>",
+                "Verwendung: /auto give | /auto sim <speed> [drift] [gap] [ice] | /auto config get [key] | /auto config set <key> <wert> | /auto prefs <key> <on|off>",
                 NamedTextColor.YELLOW));
     }
 
@@ -82,19 +83,34 @@ public final class CarCommand implements BasicCommand {
                 player.sendMessage(Component.text("Gültig: true/false/on/off/an/aus", NamedTextColor.RED));
                 return;
             }
-            if (key.equals("mouse_steer")) {
-                prefs.setMouseSteer(player.getUniqueId(), value);
-            } else {
-                prefs.setReverseInvert(player.getUniqueId(), value);
-            }
+            setPref(player.getUniqueId(), key, value);
             player.sendMessage(Component.text(key + " ist jetzt " + (value ? "an" : "aus") + ".", NamedTextColor.GREEN));
             return;
         }
-        player.sendMessage(Component.text("Verwendung: /auto prefs <mouse_steer|reverse_invert> <on|off>", NamedTextColor.YELLOW));
+        player.sendMessage(Component.text("Verwendung: /auto prefs <" + String.join("|", PREF_KEYS) + "> <on|off>",
+                NamedTextColor.YELLOW));
+    }
+
+    private void setPref(java.util.UUID playerId, String key, boolean value) {
+        switch (key) {
+            case "mouse_steer" -> prefs.setMouseSteer(playerId, value);
+            case "reverse_invert" -> prefs.setReverseInvert(playerId, value);
+            case "actionbar" -> prefs.setActionbar(playerId, value);
+            case "actionbar_speed" -> prefs.setActionbarSpeed(playerId, value);
+            case "actionbar_grip" -> prefs.setActionbarGrip(playerId, value);
+            default -> throw new IllegalArgumentException("unbekannter Pref-Key: " + key);
+        }
     }
 
     private boolean prefValue(java.util.UUID playerId, String key) {
-        return key.equals("mouse_steer") ? prefs.mouseSteer(playerId) : prefs.reverseInvert(playerId);
+        return switch (key) {
+            case "mouse_steer" -> prefs.mouseSteer(playerId);
+            case "reverse_invert" -> prefs.reverseInvert(playerId);
+            case "actionbar" -> prefs.actionbar(playerId);
+            case "actionbar_speed" -> prefs.actionbarSpeed(playerId);
+            case "actionbar_grip" -> prefs.actionbarGrip(playerId);
+            default -> throw new IllegalArgumentException("unbekannter Pref-Key: " + key);
+        };
     }
 
     private Boolean parseToggle(String raw) {
@@ -183,34 +199,65 @@ public final class CarCommand implements BasicCommand {
     }
 
     // Headless-Selbsttest: kontrollierte Teststrecke (flach, Steinwand 6 Blöcke voraus) bei x/z=200/200.
+    // Flags: drift (Drehung), gap (2-Block-Loch -> Flugphase), ice (Eisbahn), stairs (Abstieg ab z+3).
     private void runSim(CommandSender sender, String[] args) {
+        // Negative Werte = Rückwärtsfahrt entgegen dem Blick-Yaw (prüft das Ausrichten auf die Rollrichtung)
         double simSpeed = 0.3;
         if (args.length >= 2) {
             try {
-                simSpeed = Math.min(3.0, Math.max(0.01, Double.parseDouble(args[1])));
+                simSpeed = Math.min(3.0, Math.max(-3.0, Double.parseDouble(args[1])));
+                if (simSpeed == 0) {
+                    simSpeed = 0.3;
+                }
             } catch (NumberFormatException ignored) {
             }
         }
+        boolean drift = hasFlag(args, "drift");
+        boolean gap = hasFlag(args, "gap");
+        boolean ice = hasFlag(args, "ice");
+        boolean stairs = hasFlag(args, "stairs");
+        boolean drive = hasFlag(args, "drive");
         org.bukkit.World world = org.bukkit.Bukkit.getWorlds().get(0);
         int baseX = 200, baseZ = 200, groundY = 60;
+        org.bukkit.Material ground = ice ? org.bukkit.Material.PACKED_ICE : org.bukkit.Material.STONE;
         for (int rz = 0; rz <= 8; rz++) {
-            for (int ry = groundY; ry <= groundY + 7; ry++) {
+            int gy = stairs ? groundY - Math.max(0, rz - 2) : groundY;
+            for (int ry = gy; ry <= groundY + 7; ry++) {
                 world.getBlockAt(baseX, ry, baseZ + rz).setType(org.bukkit.Material.AIR);
             }
-            world.getBlockAt(baseX, groundY - 1, baseZ + rz).setType(org.bukkit.Material.STONE);
+            world.getBlockAt(baseX, gy - 1, baseZ + rz).setType(ground);
         }
-        world.getBlockAt(baseX, groundY, baseZ + 6).setType(org.bukkit.Material.STONE);
-        world.getBlockAt(baseX, groundY + 1, baseZ + 6).setType(org.bukkit.Material.STONE);
-            org.bukkit.Location loc = new org.bukkit.Location(world, baseX + 0.5, groundY, baseZ + 0.5, 0f, 0f);
-            Car car = carManager.spawnCar(loc, 0f);
-            car.setSpeed(simSpeed);
-            car.setSimTicks(100);
-            boolean drift = args.length >= 3 && args[2].equalsIgnoreCase("drift");
-            car.setSimDrift(drift);
-            sender.sendMessage(Component.text("Simulation mit speed=" + simSpeed + (drift ? " + Drift" : "")
-                    + " gestartet (Wand bei z=" + (baseZ + 6) + ", Strecke y=" + groundY + ").", NamedTextColor.GREEN));
-            return;
+        if (gap) {
+            for (int rz = 3; rz <= 4; rz++) {
+                world.getBlockAt(baseX, groundY - 1, baseZ + rz).setType(org.bukkit.Material.AIR);
+                world.getBlockAt(baseX, groundY - 2, baseZ + rz).setType(org.bukkit.Material.AIR);
+                world.getBlockAt(baseX, groundY - 3, baseZ + rz).setType(ground);
+            }
         }
+        int wallY = stairs ? groundY - 4 : groundY;
+        for (int ry = wallY; ry <= groundY + 3; ry++) {
+            world.getBlockAt(baseX, ry, baseZ + 6).setType(org.bukkit.Material.STONE);
+        }
+        org.bukkit.Location loc = new org.bukkit.Location(world, baseX + 0.5, groundY, baseZ + 0.5, 0f, 0f);
+        Car car = carManager.spawnCar(loc, 0f);
+        car.setSpeed(simSpeed);
+        car.setSimTicks(100);
+        car.setSimDrift(drift);
+        car.setSimDrive(drive);
+        sender.sendMessage(Component.text("Simulation mit speed=" + simSpeed
+                + (drift ? " + Drift" : "") + (gap ? " + Loch" : "") + (ice ? " + Eis" : "")
+                + (stairs ? " + Treppe" : "") + (drive ? " + Gas" : "")
+                + " gestartet (Wand bei z=" + (baseZ + 6) + ", Strecke y=" + groundY + ").", NamedTextColor.GREEN));
+    }
+
+    private boolean hasFlag(String[] args, String flag) {
+        for (int i = 2; i < args.length; i++) {
+            if (args[i].equalsIgnoreCase(flag)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private String humanValue(String key) {
         return plugin.getConfig().getDouble(key) + unitSuffix(key);
@@ -218,12 +265,13 @@ public final class CarCommand implements BasicCommand {
 
     private String unitSuffix(String key) {
         return switch (key) {
-            case "max-speed", "max-reverse-speed", "turn-min-speed" -> " km/h";
-            case "acceleration", "reverse-acceleration", "brake-deceleration", "engine-braking" -> " m/s²";
+            case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed" -> " km/h";
+            case "acceleration", "reverse-acceleration", "brake-deceleration", "handbrake-deceleration",
+                 "engine-braking" -> " m/s²";
             case "drag" -> " %/s";
             case "max-lateral-grip" -> " m/s²";
-            case "turn-rate-max" -> " °/s";
-            case "grip-concrete", "grip-grass", "grip-default" -> " %";
+            case "turn-curvature" -> " °/m";
+            case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip" -> " %";
             default -> "";
         };
     }
@@ -256,6 +304,9 @@ public final class CarCommand implements BasicCommand {
                 all.addAll(BOOL_KEYS);
                 return filter(all, args[2]);
             }
+        }
+        if (args[0].equalsIgnoreCase("sim") && args.length >= 3) {
+            return filter(List.of("drift", "gap", "ice", "stairs", "drive"), args[args.length - 1]);
         }
         if (args[0].equalsIgnoreCase("prefs")) {
             if (args.length == 2) {
