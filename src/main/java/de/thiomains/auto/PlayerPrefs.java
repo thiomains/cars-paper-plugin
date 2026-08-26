@@ -10,14 +10,25 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Spielerweite Fahreinstellungen (Mauslenkung an/aus, Maus-Invertierung im Rückwärtsgang),
- * persistiert in prefs.yml. Beides standardmäßig aktiviert.
+ * Spielerweite Fahreinstellungen (Mauslenkung, Rückwärts-Invertierung, Actionbar-Anzeigen),
+ * persistiert in prefs.yml. Alles standardmäßig aktiviert. Actionbar ist der Hauptschalter;
+ * actionbar_speed/actionbar_grip steuern die einzelnen Segmente.
  */
 public final class PlayerPrefs {
 
-    private static final Prefs DEFAULT = new Prefs(true, true);
+    private static final Prefs DEFAULT = new Prefs(true, true, true, true, true);
 
-    private record Prefs(boolean mouseSteer, boolean reverseInvert) {
+    private record Prefs(boolean mouseSteer, boolean reverseInvert, boolean actionbar,
+                         boolean actionbarSpeed, boolean actionbarGrip) {
+        private Prefs with(boolean value, Segment segment) {
+            return switch (segment) {
+                case MOUSE_STEER -> new Prefs(value, reverseInvert, actionbar, actionbarSpeed, actionbarGrip);
+                case REVERSE_INVERT -> new Prefs(mouseSteer, value, actionbar, actionbarSpeed, actionbarGrip);
+                case ACTIONBAR -> new Prefs(mouseSteer, reverseInvert, value, actionbarSpeed, actionbarGrip);
+                case ACTIONBAR_SPEED -> new Prefs(mouseSteer, reverseInvert, actionbar, value, actionbarGrip);
+                case ACTIONBAR_GRIP -> new Prefs(mouseSteer, reverseInvert, actionbar, actionbarSpeed, value);
+            };
+        }
     }
 
     private final JavaPlugin plugin;
@@ -38,12 +49,44 @@ public final class PlayerPrefs {
         return store.getOrDefault(playerId, DEFAULT).reverseInvert();
     }
 
+    public boolean actionbar(UUID playerId) {
+        return store.getOrDefault(playerId, DEFAULT).actionbar();
+    }
+
+    public boolean actionbarSpeed(UUID playerId) {
+        return store.getOrDefault(playerId, DEFAULT).actionbarSpeed();
+    }
+
+    public boolean actionbarGrip(UUID playerId) {
+        return store.getOrDefault(playerId, DEFAULT).actionbarGrip();
+    }
+
     public void setMouseSteer(UUID playerId, boolean enabled) {
-        put(playerId, new Prefs(enabled, reverseInvert(playerId)));
+        put(playerId, copy(playerId).with(enabled, Segment.MOUSE_STEER));
     }
 
     public void setReverseInvert(UUID playerId, boolean enabled) {
-        put(playerId, new Prefs(mouseSteer(playerId), enabled));
+        put(playerId, copy(playerId).with(enabled, Segment.REVERSE_INVERT));
+    }
+
+    public void setActionbar(UUID playerId, boolean enabled) {
+        put(playerId, copy(playerId).with(enabled, Segment.ACTIONBAR));
+    }
+
+    public void setActionbarSpeed(UUID playerId, boolean enabled) {
+        put(playerId, copy(playerId).with(enabled, Segment.ACTIONBAR_SPEED));
+    }
+
+    public void setActionbarGrip(UUID playerId, boolean enabled) {
+        put(playerId, copy(playerId).with(enabled, Segment.ACTIONBAR_GRIP));
+    }
+
+    private enum Segment {
+        MOUSE_STEER, REVERSE_INVERT, ACTIONBAR, ACTIONBAR_SPEED, ACTIONBAR_GRIP
+    }
+
+    private Prefs copy(UUID playerId) {
+        return store.getOrDefault(playerId, DEFAULT);
     }
 
     private void put(UUID playerId, Prefs prefs) {
@@ -59,11 +102,16 @@ public final class PlayerPrefs {
         for (String key : yml.getKeys(false)) {
             try {
                 UUID id = UUID.fromString(key);
-                // Migration: früher hieß der Key reverse_invert_mouse
+                // Migration: früher hieß der Key reverse_invert_mouse; die Actionbar-Keys sind neu
                 boolean invert = yml.isSet(key + ".reverse_invert")
                         ? yml.getBoolean(key + ".reverse_invert")
                         : yml.getBoolean(key + ".reverse_invert_mouse", true);
-                store.put(id, new Prefs(yml.getBoolean(key + ".mouse_steer", true), invert));
+                store.put(id, new Prefs(
+                        yml.getBoolean(key + ".mouse_steer", true),
+                        invert,
+                        yml.getBoolean(key + ".actionbar", true),
+                        yml.getBoolean(key + ".actionbar_speed", true),
+                        yml.getBoolean(key + ".actionbar_grip", true)));
             } catch (IllegalArgumentException ignored) {
                 plugin.getLogger().warning("Ungültiger Eintrag in prefs.yml: " + key);
             }
@@ -74,8 +122,12 @@ public final class PlayerPrefs {
         YamlConfiguration yml = new YamlConfiguration();
         for (var entry : store.entrySet()) {
             String base = entry.getKey().toString();
-            yml.set(base + ".mouse_steer", entry.getValue().mouseSteer());
-            yml.set(base + ".reverse_invert", entry.getValue().reverseInvert());
+            Prefs p = entry.getValue();
+            yml.set(base + ".mouse_steer", p.mouseSteer());
+            yml.set(base + ".reverse_invert", p.reverseInvert());
+            yml.set(base + ".actionbar", p.actionbar());
+            yml.set(base + ".actionbar_speed", p.actionbarSpeed());
+            yml.set(base + ".actionbar_grip", p.actionbarGrip());
         }
         try {
             yml.save(file);
