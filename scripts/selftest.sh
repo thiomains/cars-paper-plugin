@@ -98,23 +98,44 @@ LOG="$LOG_DIR/selftest-$STAMP.log"
 PIPE="$SERVER_DIR/.stdin"
 rm -f "$PIPE"; mkfifo "$PIPE"
 
+# Wichtig: PIDs muessen die der echten Prozesse sein, nicht die einer Subshell —
+# sonst trifft kill nur die Huelle und tail/java laufen als Waisen weiter.
 cleanup() {
-  [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null
-  [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null
+  exec 3>&- 2>/dev/null || true
+  if [ -n "${TAIL_PID:-}" ]; then
+    kill "$TAIL_PID" 2>/dev/null
+    wait "$TAIL_PID" 2>/dev/null
+  fi
+  if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null
+    for _ in $(seq 15); do
+      kill -0 "$SERVER_PID" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$SERVER_PID" 2>/dev/null
+    wait "$SERVER_PID" 2>/dev/null
+  fi
   rm -f "$PIPE"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
+
+# Waisen frueherer Abbrueche einsammeln
+pkill -f "tail -f $LOG_DIR" 2>/dev/null || true
 
 echo "== Server starten =="
-( cd "$SERVER_DIR" && "$JAVA" -Xmx1536M -jar paper.jar nogui < "$PIPE" > "$LOG" 2>&1 ) &
+# exec: die Subshell wird durch java ersetzt, damit $! wirklich der Server ist
+( cd "$SERVER_DIR" && exec "$JAVA" -Xmx1536M -jar paper.jar nogui < "$PIPE" > "$LOG" 2>&1 ) &
 SERVER_PID=$!
 exec 3> "$PIPE"
 
+# Prozess-Substitution statt Pipe-Subshell: $! ist tail selbst, und der Filter
+# beendet sich von allein, sobald tail weg ist.
 if [ "$VERBOSE" = 1 ]; then
-  tail -f "$LOG" & TAIL_PID=$!
+  tail -f "$LOG" &
 else
-  ( tail -f "$LOG" | grep --line-buffered -o '\[Selftest\].*' ) & TAIL_PID=$!
+  tail -f "$LOG" > >(grep --line-buffered -o '\[Selftest\].*') &
 fi
+TAIL_PID=$!
 
 wait_for() { # muster timeout
   local pattern="$1" limit="$2" waited=0
@@ -138,14 +159,16 @@ if ! wait_for '\[Selftest\] SUMMARY' "$TEST_TIMEOUT"; then
   LAST="$(grep -o '\[Selftest\] START.*\|\[Selftest\] \(PASS\|FAIL\|KNOWN-FAIL\|UNEXPECTED-PASS\) [a-z0-9-]*' "$LOG" | tail -1)"
   echo "stop" >&3
   sleep 5
-  cleanup
   fail_harness "Selftest ohne Ergebnis (Timeout ${TEST_TIMEOUT}s). Zuletzt: ${LAST:-nichts}. Log: $LOG"
 fi
 
 echo "stop" >&3
 wait "$SERVER_PID" 2>/dev/null
+SERVER_PID=""
 sleep 1
 kill "$TAIL_PID" 2>/dev/null
+wait "$TAIL_PID" 2>/dev/null
+TAIL_PID=""
 
 # ── 4. Auswerten ────────────────────────────────────────────────────────────
 SUMMARY="$(grep -o '\[Selftest\] SUMMARY.*' "$LOG" | tail -1)"
