@@ -41,7 +41,9 @@ public final class CarCommand implements BasicCommand {
             new Sub("give", "/car give", "Auto-Item ins Inventar", CarPermissions.GIVE, false),
             new Sub("config", "/car config [<key> [wert]]", "Fahrwerte anzeigen/ändern", CarPermissions.CONFIG, false),
             new Sub("sim", "/car sim <speed> [drift] [gap] [ice] [stairs] [drive]",
-                    "Headless-Testfahrt (nur Konsole)", null, true));
+                    "Headless-Testfahrt (nur Konsole)", null, true),
+            new Sub("selftest", "/car selftest [--verbose] [muster]",
+                    "Automatische Verifikation (nur Konsole)", null, true));
 
     private final JavaPlugin plugin;
     private final CarManager carManager;
@@ -55,38 +57,66 @@ public final class CarCommand implements BasicCommand {
         this.prefs = prefs;
     }
 
+    /** Ergebnis der Rechteprüfung; von execute() und vom SelfTest identisch genutzt. */
+    public record Decision(Kind kind, String sub, String node) {
+        public enum Kind { HELP, ALLOW, MISSING_PERMISSION, CONSOLE_ONLY, UNKNOWN }
+    }
+
+    /**
+     * Entscheidet ohne CommandSender, ob ein Aufruf durchgehen darf — damit die
+     * Rechte-Matrix headless prüfbar ist (siehe SelfTest). Reihenfolge: car.use, dann
+     * Konsolen-Bindung, dann die Node des Unterbefehls, zuletzt car.config.&lt;key&gt; beim Setzen.
+     */
+    public static Decision decide(String[] args, boolean console, java.util.function.Predicate<String> has) {
+        if (!has.test(CarPermissions.USE)) {
+            return new Decision(Decision.Kind.MISSING_PERMISSION, args.length == 0 ? "help" : args[0],
+                    CarPermissions.USE);
+        }
+        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+            return new Decision(Decision.Kind.HELP, "help", null);
+        }
+        String name = args[0].toLowerCase();
+        Sub sub = SUBS.stream().filter(candidate -> candidate.name().equals(name)).findFirst().orElse(null);
+        if (sub == null) {
+            return new Decision(Decision.Kind.UNKNOWN, name, null);
+        }
+        if (sub.consoleOnly() && !console) {
+            return new Decision(Decision.Kind.CONSOLE_ONLY, name, null);
+        }
+        if (sub.permission() != null && !has.test(sub.permission())) {
+            return new Decision(Decision.Kind.MISSING_PERMISSION, name, sub.permission());
+        }
+        if (name.equals("config") && args.length >= 3) {
+            String key = args[1].toLowerCase();
+            if ((NUMBER_KEYS.contains(key) || BOOL_KEYS.contains(key)) && !has.test(CarPermissions.config(key))) {
+                return new Decision(Decision.Kind.MISSING_PERMISSION, name, CarPermissions.config(key));
+            }
+        }
+        return new Decision(Decision.Kind.ALLOW, name, null);
+    }
+
     @Override
     public void execute(CommandSourceStack stack, String[] args) {
         CommandSender sender = stack.getSender();
-        if (args.length == 0) {
-            sendHelp(sender);
-            return;
-        }
-        switch (args[0].toLowerCase()) {
-            case "help" -> sendHelp(sender);
-            case "config" -> {
-                if (mayUse(sender, "config")) {
-                    handleConfig(sender, args);
-                }
-            }
-            case "prefs" -> {
-                if (mayUse(sender, "prefs")) {
-                    handlePrefs(sender, args);
-                }
-            }
-            case "give" -> {
-                if (mayUse(sender, "give")) {
-                    handleGive(sender);
-                }
-            }
-            case "sim" -> {
-                if (mayUse(sender, "sim")) {
-                    runSim(sender, args);
-                }
-            }
-            default -> {
+        Decision decision = decide(args, sender instanceof ConsoleCommandSender, sender::hasPermission);
+        switch (decision.kind()) {
+            case HELP -> sendHelp(sender);
+            case MISSING_PERMISSION -> noPermission(sender, decision.node());
+            case CONSOLE_ONLY -> sender.sendMessage(Component.text("/car " + decision.sub()
+                    + " ist ein internes Testwerkzeug und läuft nur über die Server-Konsole.", NamedTextColor.RED));
+            case UNKNOWN -> {
                 sender.sendMessage(Component.text("Unbekannter Unterbefehl: " + args[0], NamedTextColor.RED));
                 sendHelp(sender);
+            }
+            case ALLOW -> {
+                switch (decision.sub()) {
+                    case "config" -> handleConfig(sender, args);
+                    case "prefs" -> handlePrefs(sender, args);
+                    case "give" -> handleGive(sender);
+                    case "sim" -> runSim(sender, args);
+                    case "selftest" -> runSelfTest(sender, args);
+                    default -> sendHelp(sender);
+                }
             }
         }
     }
@@ -110,21 +140,6 @@ public final class CarCommand implements BasicCommand {
                     .append(Component.text(" ".repeat(pad - sub.usage().length() + 2) + sub.description(),
                             NamedTextColor.GRAY)));
         }
-    }
-
-    /** Prüft Konsolen-Bindung und Node und meldet den Grund, wenn es nicht reicht. */
-    private boolean mayUse(CommandSender sender, String name) {
-        Sub sub = SUBS.stream().filter(s -> s.name().equals(name)).findFirst().orElseThrow();
-        if (sub.consoleOnly() && !(sender instanceof ConsoleCommandSender)) {
-            sender.sendMessage(Component.text("/car " + sub.name()
-                    + " ist ein internes Testwerkzeug und läuft nur über die Server-Konsole.", NamedTextColor.RED));
-            return false;
-        }
-        if (sub.permission() != null && !sender.hasPermission(sub.permission())) {
-            noPermission(sender, sub.permission());
-            return false;
-        }
-        return true;
     }
 
     private boolean allowed(CommandSender sender, Sub sub) {
@@ -341,6 +356,23 @@ public final class CarCommand implements BasicCommand {
                 + (drift ? " + Drift" : "") + (gap ? " + Loch" : "") + (ice ? " + Eis" : "")
                 + (stairs ? " + Treppe" : "") + (drive ? " + Gas" : "")
                 + " gestartet (Wand bei z=" + (baseZ + 6) + ", Strecke y=" + groundY + ").", NamedTextColor.GREEN));
+    }
+
+    /** Startet die automatische Verifikation; optionales Muster filtert die Szenarien. */
+    private void runSelfTest(CommandSender sender, String[] args) {
+        boolean verbose = false;
+        String filter = null;
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equalsIgnoreCase("--verbose")) {
+                verbose = true;
+            } else {
+                filter = args[i].toLowerCase();
+            }
+        }
+        SelfTest selfTest = new SelfTest(plugin, carManager, carConfig, verbose, filter);
+        if (!selfTest.start()) {
+            sender.sendMessage(Component.text("Es läuft bereits ein Selftest.", NamedTextColor.RED));
+        }
     }
 
     private boolean hasFlag(String[] args, String flag) {

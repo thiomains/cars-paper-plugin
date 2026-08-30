@@ -59,9 +59,10 @@ Sender auch ausführen darf.
 `prefs.yml`, alles außer `actionbar_grip` standardmäßig an; als Wert gehen
 `true/false/on/off/an/aus`.
 
-Dazu gibt es `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]` — ein internes
-Testwerkzeug, das nur auf der Server-Konsole läuft und im Autocomplete nicht auftaucht.
-Es baut eine kontrollierte Strecke, fährt sie ab und loggt pro Tick den Fahrzustand.
+Dazu kommen zwei interne Werkzeuge, die nur auf der Server-Konsole laufen und im Autocomplete
+nicht auftauchen: `/car sim <speed> [flags]` baut eine kontrollierte Strecke, fährt sie ab und
+loggt pro Tick den Fahrzustand; `/car selftest [--verbose] [muster]` fährt die komplette
+Testsuite (siehe unten).
 
 ### Permissions
 
@@ -124,6 +125,28 @@ Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere
 - **Optik:** Das Modell nickt in Steigungen und beim Bremsen/Beschleunigen und rollt in
   Kurven — reine Anzeige, ohne Rückwirkung auf die Physik.
 
+## Tests
+
+```bash
+scripts/selftest.sh              # nur Ergebniszeilen und Fehlschläge
+scripts/selftest.sh --verbose    # zusätzlich jeder Tick und das komplette Serverlog
+scripts/selftest.sh --only step  # nur Szenarien, deren Name "step" enthält
+```
+
+Das Skript baut das Plugin, holt bei Bedarf ein Paper-JAR nach `.testserver/`, startet dort einen
+Server mit Flachwelt und festem Seed und lässt `/car selftest` laufen. Geprüft werden Fahrphysik
+(Wandkontakt und Rückprall, Löcher, Eis, Gefälle, Stufen), die Rechte-Matrix und das Clamping der
+Config-Werte — die Erwartungen stehen in `SelfTest.java`. Exit 0 heißt grün, 1 Testfehler,
+2 Harness-Fehler.
+
+Szenarien für bekannte, noch offene Bugs sind als `knownFail` markiert: sie dürfen fehlschlagen,
+ohne den Lauf rot zu färben, melden aber `UNEXPECTED-PASS`, sobald der Bug behoben ist. Offen ist
+derzeit, dass von Belägen mit reduzierter Oberkante (Farmland, Grasweg, Schlamm) eine ganze
+1-Block-Stufe nicht befahrbar ist.
+
+Nicht automatisiert und weiterhin manuell: echte Spielereingaben, die Modell-Optik und das
+Resourcepack.
+
 ## Build
 
 Maven, Java 25:
@@ -148,6 +171,7 @@ Central — das steht in der `pom.xml` und braucht keine extra Einrichtung.
 | `CarCommand.java` | `/car` mit `help`/`prefs`/`give`/`config`/`sim` |
 | `CarConfig.java` | Einheiten-Umrechnung, Clamping, Live-Reload |
 | `PlayerPrefs.java` | Fahreinstellungen pro Spieler (`prefs.yml`) |
+| `SelfTest.java` | Testszenarien mit ihren Erwartungen (`/car selftest`) |
 | `CarPermissions.java` | Permission-Nodes inkl. der Pro-Key-Nodes aus der Config-Key-Liste |
 | `Car.java`, `CarItem.java` | Fahrzeugzustand bzw. Item-/Modell-Definition |
 
@@ -157,5 +181,5 @@ Details zu Paper-Fallstricken, Physik-Interna und Konventionen stehen in
 ## Konventionen
 
 Deutsche User-Meldungen und Kommentare, englische Bezeichner. Commits semantisch und
-deutsch (`feat(physik): …`), Hauptzweig `main`. Es gibt keine Tests — verifiziert wird
-über Build (Exit 0) und einen Headless-Server-Smoke mit `/car sim` auf der Konsole.
+deutsch (`feat(physik): …`), Hauptzweig `main`. Es gibt kein JUnit — verifiziert wird
+über `scripts/selftest.sh` (Build + Headless-Server + Szenarien).

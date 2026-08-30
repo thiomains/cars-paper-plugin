@@ -30,6 +30,7 @@ public final class Car {
     private int simTicks;
     private boolean simDrift;
     private boolean simDrive;
+    private java.util.function.Consumer<SimSample> simObserver;
 
     public Car(ArmorStand base, ItemDisplay model, Interaction hitbox) {
         this.base = base;
@@ -171,6 +172,15 @@ public final class Car {
 
     public void setSimDrive(boolean simDrive) {
         this.simDrive = simDrive;
+    }
+
+    /** Sammelt die Tick-Werte statt sie zu loggen (vom SelfTest gesetzt); null = normales [Sim]-Log. */
+    public java.util.function.Consumer<SimSample> getSimObserver() {
+        return simObserver;
+    }
+
+    public void setSimObserver(java.util.function.Consumer<SimSample> simObserver) {
+        this.simObserver = simObserver;
     }
 
     /** Der fahrende Spieler (Passagier auf dem ArmorStand), oder null. */

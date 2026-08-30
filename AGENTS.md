@@ -23,17 +23,50 @@ Artefakt: `target/auto-<version>.jar`. Version im `pom.xml` pflegen (wird per Fi
 - Seit der Dimensions-Migration liegt die Overworld-Region unter `world/dimensions/minecraft/overworld/` (auch `entities/`), nicht in `world/region/`.
 - Spawn-Chunks laden Entities nach Restart nicht ohne Spieler-Proximität; Auto-Re-Registrierung läuft daher über `EntitiesLoadEvent` + Sweeps in `AutoPlugin.onEnable` (Sofort + 100 Ticks verzögert).
 
-## Live-Verifikation (headless, ohne Client)
+## Verifikation
+
+**Automatisch (der Normalfall):**
 
 ```bash
-cd /tmp/opencode/papertest   # enthält paper.jar (26.2 b119) + eula.txt
-cp target/auto-*.jar plugins/
-( sleep 50; echo "car sim 1.5"; sleep 5; echo "stop"; ) \
-  | "$JAVA_HOME/bin/java" -Xmx1536M -jar paper.jar nogui
+scripts/selftest.sh              # nur Ergebniszeilen und Fehlschlaege
+scripts/selftest.sh --verbose    # zusaetzlich jeder Tick und das komplette Serverlog
+scripts/selftest.sh --only step  # nur Szenarien, deren Name "step" enthaelt
 ```
 
-- `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]` (nur Konsole, taucht im Autocomplete nicht auf; negativer speed = Rückwärtsfahrt vom Startpunkt weg) baut eine kontrollierte Strecke (flach, y=60, drei Spalten breit x=199..201) bei x/z=200/200 mit Steinwand bei z+6 und fährt los — loggt `[Sim]`-Zeilen pro Tick (Speed, vf, slip, grounded, grip, blocked, pos). Erwartung Regression: Wand-Kontakt bei z≈204,7 (die Nase berührt die Wand — Footprint 1,8 × 2,5 Blöcke, halbe Länge 1,25!), danach leichter Rückprall ~1–1,5 Blöcke (crash-restitution 25 %, Rebound-Cap 0,10 Bl/tick; `crash-restitution 0` = alter harter Stopp), kein Tunneling über z=206 hinaus. Anmerkung: die Sample-Quantisierung (~0,37 Blöcke) dominiert die letzte Stelle — beobachtet wurde z=204,61; entscheidend ist Nase-Freiheit/O(0,15-Abstand) und kein Tunneling. `gap` entfernt Boden bei z+2..+5 (4 Blöcke — kürzere Löcher ≤2 überbrückt der Footprint physikalisch korrekt, weil stets ein Rad gestützt bleibt; Flugphase grounded=false, grip=0,00). `ice` = Packeis (grip=0,15, langer Auslauf ohne Standfest-Raste), `stairs` lässt die Strecke ab z+3 stufenweise abfallen (bergab: durchgehend grounded, Energie-Gewinn + gefälle-skalierter Schub sichtbar), `drive` = Gas-Simulation (weiche Annäherung an max-speed).
-- Die Teststrecke braucht eine **Flachwelt** (`level-type=minecraft:flat`): in generiertem Gelände steht der hintere Kollisions-Sample (z−1,25) außerhalb des freigeräumten Bereichs z+0..+8, das Auto meldet sofort `blocked=true` und fährt keinen Meter.
+Das Skript baut, laedt bei Bedarf ein Paper-JAR von `fill.papermc.io` nach `.testserver/`
+(gitignored), startet einen Server mit **Flachwelt und festem Seed**, laesst dort
+`/car selftest` laufen und wertet aus. Exit 0 = alles gruen, 1 = Testfehler, 2 = Harness-Fehler.
+Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`JAVA=`).
+
+- **Die Erwartungen stehen in `SelfTest.java`**, nicht in dieser Datei — wer die Physik aendert,
+  zieht dort die Konstanten nach (`WALL_CONTACT_MIN/MAX`, `ICE_GRIP`, …).
+- Jedes Szenario baut seine Strecke auf einer eigenen Bahn (60 Bloecke Abstand), raeumt auch
+  **hinter** dem Start frei (hintere Kollisions-Samples liegen bei z−1,25) und endet in einer
+  **Wand**: ohne die faehrt das Auto hinten heraus, faellt in die Flachwelt und fuehrt jede
+  Distanzmessung ad absurdum. Zusaetzlich bricht die `minY`-Sicherung so einen Lauf ab.
+- `knownFail` markiert Szenarien fuer bekannte, offene Bugs: sie duerfen fehlschlagen, ohne den
+  Lauf rot zu faerben. Besteht so eines ploetzlich, meldet der Lauf `UNEXPECTED-PASS` und wird
+  rot — dann ist der Bug gefixt und das Flag muss weg.
+- Aktuell offen (`knownFail`): **von Belaegen mit reduzierter Oberkante (Farmland/Grasweg 0,9375,
+  Schlamm/Seelensand 0,875) ist eine ganze 1-Block-Stufe nicht befahrbar** — die Hindernis-Oberkante
+  liegt dann 1,0625 bzw. 1,125 ueber dem Auto und reisst `MAX_STEP` (1,0). Von Stein aus geht
+  dieselbe Stufe. Die flache 1/16-Kante (Farmland -> Vollblock ohne Hoehenwechsel) ist dagegen
+  nachweislich in Ordnung.
+- Nicht automatisierbar und weiterhin manuell: echte Spielereingaben (Mauslenkung, Actionbar),
+  Modell-Optik (Pitch/Roll-Vorzeichen sind headless unsichtbar), Client-Autocomplete, Resourcepack.
+
+**Manuell (einzelne Fahrt ansehen):** `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]`
+(nur Konsole, taucht im Autocomplete nicht auf; negativer speed = Rueckwaertsfahrt vom Startpunkt weg)
+baut eine kontrollierte Strecke (flach, y=60, drei Spalten breit x=199..201) bei x/z=200/200 mit
+Steinwand bei z+6 und loggt `[Sim]`-Zeilen pro Tick. Erwartung: Wand-Kontakt bei z≈204,6 (die Nase
+beruehrt die Wand — Footprint 1,8 × 2,5 Bloecke, halbe Laenge 1,25!), danach Rueckprall ~1,4 Bloecke
+(crash-restitution 25 %, Rebound-Cap 0,10 Bl/tick; `crash-restitution 0` = alter harter Stopp),
+kein Tunneling ueber z=206 hinaus. `gap` entfernt Boden bei z+2..+5 (4 Bloecke — kuerzere Loecher ≤2
+ueberbrueckt der Footprint, weil stets ein Rad gestuetzt bleibt), `ice` = Packeis (grip=0,15),
+`stairs` laesst die Strecke ab z+3 stufenweise abfallen, `drive` = Gas-Simulation.
+Diese Strecke raeumt NICHT hinter dem Start frei: in generiertem Gelaende steht der hintere
+Kollisions-Sample im Berg und das Auto meldet sofort `blocked=true` — dafuer eine Flachwelt nehmen.
+
 - `/car config <key> <wert>` wirkt LIVE (Reload ohne Restart), `/car prefs` ist pro Spieler.
 
 ## Architektur-Kernstellen (nicht aus Dateinamen erkennbar)
@@ -58,5 +91,5 @@ cp target/auto-*.jar plugins/
 ## Repo-Konventionen
 
 - Deutsch für User-Meldungen/Kommentare, englische Bezeichner. Commits: semantisch + deutsch (`feat(physik): ...`), Hauptzweig `main`.
-- Keine Tests; Verifikation = Build (Exit 0) + Headless-Server-smoke. Nutzer-Wert zuerst am Server prüfen, wenn sich Fahrphysik ändert.
-- `.omo/` ist lokal (nicht committen). `/tmp/opencode/papertest` ist Wegwerf-Testserver.
+- Kein JUnit/Mock-Framework (die Physik liest echte Bloecke, Mocks wuerden nur meine Annahmen bestaetigen); Verifikation = `scripts/selftest.sh` (Exit 0). Nutzer-Wert zuerst am Server prüfen, wenn sich Fahrphysik ändert.
+- `.omo/` ist lokal (nicht committen). `.testserver/` ist der Wegwerf-Testserver des Selftests (gitignored, wird bei Bedarf neu erzeugt).

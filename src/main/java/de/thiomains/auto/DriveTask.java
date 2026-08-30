@@ -433,6 +433,14 @@ public final class DriveTask extends BukkitRunnable {
 
         if (car.getSimTicks() > 0) {
             car.setSimTicks(car.getSimTicks() - 1);
+            if (car.getSimObserver() != null) {
+                car.getSimObserver().accept(new SimSample(car.getSimTicks(), startAbs, vf, slipDeg,
+                        grounded, grip, stepBlocked, targetX, targetY, targetZ, car.getYaw()));
+                if (car.getSimTicks() == 0) {
+                    carManager.removeCar(car, false);
+                }
+                return;
+            }
             Block bf = world.getBlockAt(floor(targetX), floor(targetY), floor(targetZ));
             Block bh = world.getBlockAt(floor(targetX), floor(targetY) + 1, floor(targetZ));
             logger.info("[Sim] t=" + car.getSimTicks()
