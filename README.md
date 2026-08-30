@@ -4,7 +4,7 @@ Fahrbare Autos für Minecraft als Paper-Plugin — mit einer Fahrphysik, die auf
 echten Geschwindigkeitsvektor beruht: Grip pro Rad, Traktionskreis, Schlupf, Driften,
 Stufen, Steigungen und Crashs mit Drehimpuls.
 
-- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.1.0**
+- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.2.0**
 - **Server:** Paper, `api-version: '26.2'` (Minecraft 26.2)
 - **Java:** 25
 - **Build:** Maven, kein Testframework, kein CI
@@ -23,7 +23,7 @@ sich per Befehl **live** ändern — ohne Restart.
 2. JAR nach `plugins/` kopieren, Server starten.
 3. Resourcepack mit dem Item-Modell `thiomains:auto` ausliefern — ohne Pack zeigen Item
    und Fahrzeug den schwarz-pinken Missing-Texture-Würfel; fahren lässt es sich trotzdem.
-4. `/auto give` (Permission `auto.give`, Default: OP) und losfahren.
+4. `/car give` (Permission `car.give`, Default: OP) und losfahren.
 
 ## Bedienung
 
@@ -43,31 +43,51 @@ zusammen, Traktionskreis).
 
 ## Befehle
 
-Alle unter `/auto`, Permission `auto.give` (Default OP). Tab-Completion ist überall dabei.
+Hauptbefehl ist `/car`, `/auto` bleibt als Alias erhalten. Tab-Completion zeigt nur, was der
+Sender auch ausführen darf.
 
 ```
-/auto give                          Auto-Item ins Inventar
-/auto config get [key]              wirksame Werte anzeigen (mit Einheit)
-/auto config set <key> <wert>       Wert setzen — greift live, ohne Restart
-/auto prefs <key> <on|off>          Fahreinstellung pro Spieler
-/auto sim <speed> [drift] [gap] [ice] [stairs] [drive]
-                                    Headless-Testfahrt auf einer gebauten Strecke
+/car                            Übersicht (identisch zu /car help)
+/car help                       Plugin, Version, Autor und alle erlaubten Unterbefehle
+/car prefs [<key> [on|off]]     Eigene Fahreinstellungen anzeigen/ändern
+/car give                       Auto-Item ins Inventar
+/car config [<key> [wert]]      Fahrwerte anzeigen/ändern — Änderungen greifen live
 ```
 
-`/auto prefs`-Keys: `mouse_steer`, `reverse_invert` (Lenkung rückwärts spiegeln),
+`/car prefs`-Keys: `mouse_steer`, `reverse_invert` (Lenkung rückwärts spiegeln),
 `actionbar` (Hauptschalter), `actionbar_speed`, `actionbar_grip`. Gespeichert in
-`prefs.yml`, alles außer `actionbar_grip` standardmäßig an.
+`prefs.yml`, alles außer `actionbar_grip` standardmäßig an; als Wert gehen
+`true/false/on/off/an/aus`.
 
-`/auto sim` baut bei x/z = 200/200 eine kontrollierte Strecke mit Wand voraus, fährt los
-und loggt pro Tick `[Sim]`-Zeilen (Speed, vf, Slip, Bodenkontakt, Grip, Blockade, Position).
-Damit lässt sich die Physik ohne Client verifizieren — negativer `speed` = Rückwärtsfahrt,
-die Flags schalten Drift, Loch im Boden, Eisbahn, Treppenabstieg und Gas-Simulation zu.
+Dazu gibt es `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]` — ein internes
+Testwerkzeug, das nur auf der Server-Konsole läuft und im Autocomplete nicht auftaucht.
+Es baut eine kontrollierte Strecke, fährt sie ab und loggt pro Tick den Fahrzustand.
+
+### Permissions
+
+| Node | Default | Erlaubt |
+| --- | --- | --- |
+| `car.use` | alle | `/car`, `/car help` |
+| `car.prefs` | alle | `/car prefs …` |
+| `car.give` | OP | `/car give` |
+| `car.config` | OP | Fahrwerte **lesen** |
+| `car.config.<key>` | OP | genau diesen Key **setzen**, z. B. `car.config.acceleration` |
+| `car.config.*` | OP | alle Fahrwerte setzen |
+
+Ohne OP kann man also fahren und die eigenen Einstellungen pflegen; alles Weitere ist
+OP-Sache. Geprüft wird ausschließlich über Bukkit-Permissions, nie über den OP-Status —
+jedes Permissions-Plugin (LuckPerms & Co.) kann die Defaults beliebig überschreiben, auch
+in beide Richtungen. Die Pro-Key-Nodes entstehen automatisch aus der Config-Key-Liste, ein
+neuer Fahrwert bringt seine Node also mit.
+
+Beim Update von 1.1.0: `auto.give` heißt jetzt `car.give` — bestehende Zuweisungen einmal
+umstellen.
 
 ## Konfiguration
 
 `config.yml` (`config-version: 8`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich — genau diesen
-wirksamen Wert zeigt `/auto config get`. Bei einem Versionssprung wird die alte Datei als
+wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
 `config.veraltet.yml` gesichert und unveränderte Keys werden übernommen.
 
 | Bereich | Keys |
@@ -125,9 +145,10 @@ Central — das steht in der `pom.xml` und braucht keine extra Einrichtung.
 | `DriveTask.java` | Physik-Tick: Eingaben, Grip, Lenkung, Kollision, Fall, Actionbar, Optik |
 | `GripCalculator.java` | Grip-Faktor je Untergrundmaterial |
 | `CarListener.java` | Platzieren, Einsteigen, Abbauen, Chunk-Load |
-| `CarCommand.java` | `/auto` mit `give`/`config`/`prefs`/`sim` |
+| `CarCommand.java` | `/car` mit `help`/`prefs`/`give`/`config`/`sim` |
 | `CarConfig.java` | Einheiten-Umrechnung, Clamping, Live-Reload |
 | `PlayerPrefs.java` | Fahreinstellungen pro Spieler (`prefs.yml`) |
+| `CarPermissions.java` | Permission-Nodes inkl. der Pro-Key-Nodes aus der Config-Key-Liste |
 | `Car.java`, `CarItem.java` | Fahrzeugzustand bzw. Item-/Modell-Definition |
 
 Details zu Paper-Fallstricken, Physik-Interna und Konventionen stehen in
@@ -137,4 +158,4 @@ Details zu Paper-Fallstricken, Physik-Interna und Konventionen stehen in
 
 Deutsche User-Meldungen und Kommentare, englische Bezeichner. Commits semantisch und
 deutsch (`feat(physik): …`), Hauptzweig `main`. Es gibt keine Tests — verifiziert wird
-über Build (Exit 0) und einen Headless-Server-Smoke mit `/auto sim`.
+über Build (Exit 0) und einen Headless-Server-Smoke mit `/car sim` auf der Konsole.

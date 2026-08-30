@@ -6,6 +6,17 @@ authors:
   - thiomains
 api-version: '26.2'
 permissions:
-  auto.give:
-    description: Erlaubt /auto give
+  # Die Pro-Key-Nodes car.config.<key> und der Sammelknoten car.config.* entstehen
+  # zur Laufzeit aus den Key-Listen in CarConfig (siehe CarPermissions).
+  car.use:
+    description: Erlaubt /car und /car help
+    default: true
+  car.prefs:
+    description: Erlaubt eigene Fahreinstellungen über /car prefs
+    default: true
+  car.give:
+    description: Erlaubt /car give
+    default: op
+  car.config:
+    description: Erlaubt das Lesen der Fahrwerte über /car config
     default: op

@@ -29,7 +29,9 @@ public final class AutoPlugin extends JavaPlugin {
         CarListener listener = new CarListener(carManager, carConfig, getLogger());
         getServer().getPluginManager().registerEvents(listener, this);
 
-        registerCommand("auto", "Auto-Verwaltung", new CarCommand(this, carManager, carConfig, playerPrefs));
+        CarPermissions.register(getServer().getPluginManager());
+        registerCommand("car", "Auto-Verwaltung", java.util.List.of("auto"),
+                new CarCommand(this, carManager, carConfig, playerPrefs));
 
         new DriveTask(carManager, carConfig, gripCalculator, playerPrefs, getLogger()).runTaskTimer(this, 1L, 1L);
 

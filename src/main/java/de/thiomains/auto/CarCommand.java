@@ -5,6 +5,7 @@ import io.papermc.paper.command.brigadier.CommandSourceStack;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -14,9 +15,11 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * /auto give|sim|config. Als Paper-Plugin werden Befehle zur Laufzeit via
- * registerCommand registriert statt per YAML deklariert.
- * Die Werte von /auto config sind menschenlesbar (km/h, m/s², %).
+ * /car (Alias /auto) mit help|prefs|give|config|sim. Als Paper-Plugin werden Befehle zur
+ * Laufzeit via registerCommand registriert statt per YAML deklariert.
+ * Die Werte von /car config sind menschenlesbar (km/h, m/s², %); Lesen braucht car.config,
+ * Setzen zusätzlich car.config.<key>. /car sim ist internes Testwerkzeug und nur auf der
+ * Konsole erreichbar (weder Autocomplete noch Ausführung für Spieler).
  */
 public final class CarCommand implements BasicCommand {
 
@@ -24,6 +27,21 @@ public final class CarCommand implements BasicCommand {
     private static final List<String> BOOL_KEYS = CarConfig.BOOL_KEYS;
     private static final List<String> MAX_100_KEYS = List.of(
             "drag", "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip");
+
+    private static final List<String> PREF_KEYS = List.of(
+            "mouse_steer", "reverse_invert", "actionbar", "actionbar_speed", "actionbar_grip");
+
+    /** Ein Unterbefehl mit seiner Node; speist Hilfe, Rechteprüfung und Autocomplete. */
+    private record Sub(String name, String usage, String description, String permission, boolean consoleOnly) {
+    }
+
+    private static final List<Sub> SUBS = List.of(
+            new Sub("help", "/car help", "Diese Übersicht", CarPermissions.USE, false),
+            new Sub("prefs", "/car prefs [<key> [on|off]]", "Eigene Fahreinstellungen", CarPermissions.PREFS, false),
+            new Sub("give", "/car give", "Auto-Item ins Inventar", CarPermissions.GIVE, false),
+            new Sub("config", "/car config [<key> [wert]]", "Fahrwerte anzeigen/ändern", CarPermissions.CONFIG, false),
+            new Sub("sim", "/car sim <speed> [drift] [gap] [ice] [stairs] [drive]",
+                    "Headless-Testfahrt (nur Konsole)", null, true));
 
     private final JavaPlugin plugin;
     private final CarManager carManager;
@@ -37,47 +55,115 @@ public final class CarCommand implements BasicCommand {
         this.prefs = prefs;
     }
 
-    private static final List<String> PREF_KEYS = List.of(
-            "mouse_steer", "reverse_invert", "actionbar", "actionbar_speed", "actionbar_grip");
-
     @Override
     public void execute(CommandSourceStack stack, String[] args) {
         CommandSender sender = stack.getSender();
-        if (args.length >= 1 && args[0].equalsIgnoreCase("config")) {
-            handleConfig(sender, args);
+        if (args.length == 0) {
+            sendHelp(sender);
             return;
         }
-        if (args.length >= 1 && args[0].equalsIgnoreCase("prefs")) {
-            handlePrefs(sender, args);
-            return;
+        switch (args[0].toLowerCase()) {
+            case "help" -> sendHelp(sender);
+            case "config" -> {
+                if (mayUse(sender, "config")) {
+                    handleConfig(sender, args);
+                }
+            }
+            case "prefs" -> {
+                if (mayUse(sender, "prefs")) {
+                    handlePrefs(sender, args);
+                }
+            }
+            case "give" -> {
+                if (mayUse(sender, "give")) {
+                    handleGive(sender);
+                }
+            }
+            case "sim" -> {
+                if (mayUse(sender, "sim")) {
+                    runSim(sender, args);
+                }
+            }
+            default -> {
+                sender.sendMessage(Component.text("Unbekannter Unterbefehl: " + args[0], NamedTextColor.RED));
+                sendHelp(sender);
+            }
         }
-        if (args.length >= 1 && args[0].equalsIgnoreCase("sim")) {
-            runSim(sender, args);
-            return;
-        }
-        if (args.length == 1 && args[0].equalsIgnoreCase("give")) {
-            handleGive(sender);
-            return;
-        }
-        sender.sendMessage(Component.text(
-                "Verwendung: /auto give | /auto sim <speed> [drift] [gap] [ice] | /auto config get [key] | /auto config set <key> <wert> | /auto prefs <key> <on|off>",
-                NamedTextColor.YELLOW));
     }
 
-    /** Spielerweite Fahreinstellungen: akzeptiert true/false/on/off/an/aus. */
+    /** Plugin-Kopf plus die Unterbefehle, die dieser Sender wirklich nutzen darf. */
+    private void sendHelp(CommandSender sender) {
+        var meta = plugin.getPluginMeta();
+        String authors = String.join(", ", meta.getAuthors());
+        sender.sendMessage(Component.text(meta.getName() + " v" + meta.getVersion()
+                + (authors.isEmpty() ? "" : " — von " + authors), NamedTextColor.GOLD));
+        String description = meta.getDescription();
+        if (description != null && !description.isBlank()) {
+            sender.sendMessage(Component.text(description, NamedTextColor.GRAY));
+        }
+        int pad = SUBS.stream().filter(sub -> allowed(sender, sub)).mapToInt(sub -> sub.usage().length()).max().orElse(0);
+        for (Sub sub : SUBS) {
+            if (!allowed(sender, sub)) {
+                continue;
+            }
+            sender.sendMessage(Component.text("  " + sub.usage(), NamedTextColor.YELLOW)
+                    .append(Component.text(" ".repeat(pad - sub.usage().length() + 2) + sub.description(),
+                            NamedTextColor.GRAY)));
+        }
+    }
+
+    /** Prüft Konsolen-Bindung und Node und meldet den Grund, wenn es nicht reicht. */
+    private boolean mayUse(CommandSender sender, String name) {
+        Sub sub = SUBS.stream().filter(s -> s.name().equals(name)).findFirst().orElseThrow();
+        if (sub.consoleOnly() && !(sender instanceof ConsoleCommandSender)) {
+            sender.sendMessage(Component.text("/car " + sub.name()
+                    + " ist ein internes Testwerkzeug und läuft nur über die Server-Konsole.", NamedTextColor.RED));
+            return false;
+        }
+        if (sub.permission() != null && !sender.hasPermission(sub.permission())) {
+            noPermission(sender, sub.permission());
+            return false;
+        }
+        return true;
+    }
+
+    private boolean allowed(CommandSender sender, Sub sub) {
+        if (sub.consoleOnly()) {
+            return sender instanceof ConsoleCommandSender;
+        }
+        return sub.permission() == null || sender.hasPermission(sub.permission());
+    }
+
+    private void noPermission(CommandSender sender, String permission) {
+        sender.sendMessage(Component.text("Dazu fehlt dir die Berechtigung (" + permission + ").", NamedTextColor.RED));
+    }
+
+    /** Spielerweite Fahreinstellungen: /car prefs [<key> [on|off]], akzeptiert true/false/on/off/an/aus. */
     private void handlePrefs(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(Component.text("Fahreinstellungen sind nur für Spieler.", NamedTextColor.RED));
+            sender.sendMessage(Component.text("Fahreinstellungen gibt es nur pro Spieler.", NamedTextColor.RED));
             return;
         }
-        if (args.length == 2 && PREF_KEYS.contains(args[1].toLowerCase())) {
-            String key = args[1].toLowerCase();
+        if (args.length == 1) {
+            player.sendMessage(Component.text("Deine Fahreinstellungen:", NamedTextColor.GOLD));
+            for (String key : PREF_KEYS) {
+                player.sendMessage(Component.text("  " + key + " = "
+                        + (prefValue(player.getUniqueId(), key) ? "an" : "aus"), NamedTextColor.YELLOW));
+            }
+            return;
+        }
+        String key = args[1].toLowerCase();
+        if (!PREF_KEYS.contains(key)) {
+            player.sendMessage(Component.text("Unbekannter Key: " + args[1], NamedTextColor.RED));
+            player.sendMessage(Component.text("Gültig: " + String.join(", ", PREF_KEYS), NamedTextColor.YELLOW));
+            return;
+        }
+        if (args.length == 2) {
             boolean current = prefValue(player.getUniqueId(), key);
             player.sendMessage(Component.text(key + " = " + (current ? "an" : "aus"), NamedTextColor.YELLOW));
             return;
         }
-        if (args.length == 3 && PREF_KEYS.contains(args[1].toLowerCase())) {
-            String key = args[1].toLowerCase();
+        if (args.length == 3) {
             Boolean value = parseToggle(args[2]);
             if (value == null) {
                 player.sendMessage(Component.text("Gültig: true/false/on/off/an/aus", NamedTextColor.RED));
@@ -87,8 +173,7 @@ public final class CarCommand implements BasicCommand {
             player.sendMessage(Component.text(key + " ist jetzt " + (value ? "an" : "aus") + ".", NamedTextColor.GREEN));
             return;
         }
-        player.sendMessage(Component.text("Verwendung: /auto prefs <" + String.join("|", PREF_KEYS) + "> <on|off>",
-                NamedTextColor.YELLOW));
+        player.sendMessage(Component.text("Verwendung: /car prefs [<key> [on|off]]", NamedTextColor.YELLOW));
     }
 
     private void setPref(java.util.UUID playerId, String key, boolean value) {
@@ -132,8 +217,9 @@ public final class CarCommand implements BasicCommand {
         player.sendMessage(Component.text("Du hast ein Auto erhalten. Rechtsklick auf den Boden zum Platzieren.", NamedTextColor.GREEN));
     }
 
+    /** /car config [<key> [wert]] — Lesen deckt car.config ab, Setzen braucht car.config.<key>. */
     private void handleConfig(CommandSender sender, String[] args) {
-        if (args.length == 2 && args[1].equalsIgnoreCase("get")) {
+        if (args.length == 1) {
             sender.sendMessage(Component.text("Auto-Config:", NamedTextColor.GOLD));
             for (String key : NUMBER_KEYS) {
                 sender.sendMessage(Component.text("  " + key + " = " + humanValue(key), NamedTextColor.YELLOW));
@@ -143,59 +229,61 @@ public final class CarCommand implements BasicCommand {
             }
             return;
         }
-        if (args.length == 3 && args[1].equalsIgnoreCase("get")) {
-            String key = args[2].toLowerCase();
-            if (NUMBER_KEYS.contains(key)) {
-                sender.sendMessage(Component.text(key + " = " + humanValue(key), NamedTextColor.YELLOW));
-                return;
-            }
-            if (BOOL_KEYS.contains(key)) {
-                sender.sendMessage(Component.text(key + " = " + boolValue(key), NamedTextColor.YELLOW));
-                return;
-            }
-            unknownKey(sender, key);
+        String key = args[1].toLowerCase();
+        if (key.equals("get") || key.equals("set")) {
+            sender.sendMessage(Component.text("»get«/»set« entfallen — nutze /car config [<key> [wert]].",
+                    NamedTextColor.YELLOW));
             return;
         }
-        if (args.length == 4 && args[1].equalsIgnoreCase("set")) {
-            String key = args[2].toLowerCase();
-            String raw = args[3];
-            if (NUMBER_KEYS.contains(key)) {
-                double value;
-                try {
-                    value = Double.parseDouble(raw.replace(',', '.'));
-                } catch (NumberFormatException e) {
-                    sender.sendMessage(Component.text("Ungültige Zahl: " + raw, NamedTextColor.RED));
-                    return;
-                }
-                if (!Double.isFinite(value) || value < 0 || (MAX_100_KEYS.contains(key) && value > 100)) {
-                    sender.sendMessage(Component.text("Wert ungültig für " + key + " (erlaubt: 0"
-                            + (MAX_100_KEYS.contains(key) ? "–100" : " und größer") + ").", NamedTextColor.RED));
-                    return;
-                }
-                String old = humanValue(key);
-                plugin.getConfig().set(key, value);
-                plugin.saveConfig();
-                carConfig.reload();
-                sender.sendMessage(Component.text(key + ": " + old + " → " + value + unitSuffix(key) + " (live aktiv)", NamedTextColor.GREEN));
-                return;
-            }
-            if (BOOL_KEYS.contains(key)) {
-                if (!raw.equalsIgnoreCase("true") && !raw.equalsIgnoreCase("false")) {
-                    sender.sendMessage(Component.text("Wert muss true oder false sein.", NamedTextColor.RED));
-                    return;
-                }
-                boolean value = Boolean.parseBoolean(raw);
-                boolean old = boolValue(key);
-                plugin.getConfig().set(key, value);
-                plugin.saveConfig();
-                carConfig.reload();
-                sender.sendMessage(Component.text(key + ": " + old + " → " + value + " (live aktiv)", NamedTextColor.GREEN));
-                return;
-            }
-            unknownKey(sender, key);
+        boolean isNumber = NUMBER_KEYS.contains(key);
+        if (!isNumber && !BOOL_KEYS.contains(key)) {
+            unknownKey(sender, args[1]);
             return;
         }
-        sender.sendMessage(Component.text("Verwendung: /auto config get [key] | /auto config set <key> <wert>", NamedTextColor.YELLOW));
+        if (args.length == 2) {
+            sender.sendMessage(Component.text(key + " = " + (isNumber ? humanValue(key) : boolValue(key)),
+                    NamedTextColor.YELLOW));
+            return;
+        }
+        if (args.length != 3) {
+            sender.sendMessage(Component.text("Verwendung: /car config [<key> [wert]]", NamedTextColor.YELLOW));
+            return;
+        }
+        if (!sender.hasPermission(CarPermissions.config(key))) {
+            noPermission(sender, CarPermissions.config(key));
+            return;
+        }
+        String raw = args[2];
+        if (isNumber) {
+            double value;
+            try {
+                value = Double.parseDouble(raw.replace(',', '.'));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(Component.text("Ungültige Zahl: " + raw, NamedTextColor.RED));
+                return;
+            }
+            if (!Double.isFinite(value) || value < 0 || (MAX_100_KEYS.contains(key) && value > 100)) {
+                sender.sendMessage(Component.text("Wert ungültig für " + key + " (erlaubt: 0"
+                        + (MAX_100_KEYS.contains(key) ? "–100" : " und größer") + ").", NamedTextColor.RED));
+                return;
+            }
+            String old = humanValue(key);
+            plugin.getConfig().set(key, value);
+            plugin.saveConfig();
+            carConfig.reload();
+            sender.sendMessage(Component.text(key + ": " + old + " → " + value + unitSuffix(key) + " (live aktiv)", NamedTextColor.GREEN));
+            return;
+        }
+        if (!raw.equalsIgnoreCase("true") && !raw.equalsIgnoreCase("false")) {
+            sender.sendMessage(Component.text("Wert muss true oder false sein.", NamedTextColor.RED));
+            return;
+        }
+        boolean value = Boolean.parseBoolean(raw);
+        boolean old = boolValue(key);
+        plugin.getConfig().set(key, value);
+        plugin.saveConfig();
+        carConfig.reload();
+        sender.sendMessage(Component.text(key + ": " + old + " → " + value + " (live aktiv)", NamedTextColor.GREEN));
     }
 
     // Headless-Selbsttest: kontrollierte Teststrecke (flach, Steinwand 6 Blöcke voraus) bei x/z=200/200.
@@ -286,38 +374,51 @@ public final class CarCommand implements BasicCommand {
     }
 
     private void unknownKey(CommandSender sender, String key) {
-        List<String> all = new ArrayList<>(NUMBER_KEYS);
-        all.addAll(BOOL_KEYS);
         sender.sendMessage(Component.text("Unbekannter Key: " + key, NamedTextColor.RED));
-        sender.sendMessage(Component.text("Gültig: " + String.join(", ", all), NamedTextColor.YELLOW));
+        sender.sendMessage(Component.text("Gültig: " + String.join(", ", CarPermissions.configKeys()),
+                NamedTextColor.YELLOW));
     }
 
+    /** Autocomplete zeigt nur, was der Sender auch ausführen darf; sim taucht nie auf. */
     @Override
     public Collection<String> suggest(CommandSourceStack stack, String[] args) {
+        CommandSender sender = stack.getSender();
+        List<String> subs = new ArrayList<>();
+        for (Sub sub : SUBS) {
+            if (!sub.consoleOnly() && allowed(sender, sub)) {
+                subs.add(sub.name());
+            }
+        }
         if (args.length == 0) {
-            return List.of("give", "sim", "config", "prefs");
+            return subs;
         }
         if (args.length == 1) {
-            return filter(List.of("give", "sim", "config", "prefs"), args[0]);
+            return filter(subs, args[0]);
         }
-        if (args[0].equalsIgnoreCase("config")) {
+        if (args[0].equalsIgnoreCase("config") && sender.hasPermission(CarPermissions.CONFIG)) {
             if (args.length == 2) {
-                return filter(List.of("get", "set"), args[1]);
+                return filter(CarPermissions.configKeys(), args[1]);
             }
-            if (args.length == 3 && (args[1].equalsIgnoreCase("get") || args[1].equalsIgnoreCase("set"))) {
-                List<String> all = new ArrayList<>(NUMBER_KEYS);
-                all.addAll(BOOL_KEYS);
-                return filter(all, args[2]);
+            if (args.length == 3) {
+                String key = args[1].toLowerCase();
+                if (!sender.hasPermission(CarPermissions.config(key))) {
+                    return List.of();
+                }
+                if (NUMBER_KEYS.contains(key)) {
+                    return filter(List.of(String.valueOf(CarConfig.clampHumanValue(key,
+                            plugin.getConfig().getDouble(key)))), args[2]);
+                }
+                if (BOOL_KEYS.contains(key)) {
+                    return filter(List.of("true", "false"), args[2]);
+                }
             }
+            return List.of();
         }
-        if (args[0].equalsIgnoreCase("sim") && args.length >= 3) {
-            return filter(List.of("drift", "gap", "ice", "stairs", "drive"), args[args.length - 1]);
-        }
-        if (args[0].equalsIgnoreCase("prefs")) {
+        if (args[0].equalsIgnoreCase("prefs") && sender.hasPermission(CarPermissions.PREFS)) {
             if (args.length == 2) {
                 return filter(PREF_KEYS, args[1]);
             }
-            if (args.length == 3) {
+            if (args.length == 3 && PREF_KEYS.contains(args[1].toLowerCase())) {
                 return filter(List.of("on", "off", "true", "false"), args[2]);
             }
         }
@@ -326,11 +427,11 @@ public final class CarCommand implements BasicCommand {
 
     private List<String> filter(List<String> options, String prefix) {
         String lower = prefix.toLowerCase();
-        return options.stream().filter(o -> o.startsWith(lower)).toList();
+        return options.stream().filter(o -> o.toLowerCase().startsWith(lower)).toList();
     }
 
     @Override
     public String permission() {
-        return "auto.give";
+        return CarPermissions.USE;
     }
 }

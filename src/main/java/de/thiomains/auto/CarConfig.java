@@ -8,7 +8,7 @@ import java.util.List;
 /**
  * Physik-Werte, intern in der Tick-Einheit (Blöcke/Tick) gehalten. Die config.yml
  * verwendet menschenlesbare Einheiten (km/h, m/s², %), reload() rechnet um;
- * /auto config set wirkt sofort. Die Key-Listen teilen sich Command-Komplettierung
+ * /car config <key> <wert> wirkt sofort. Die Key-Listen teilen sich Command-Komplettierung
  * und Config-Migration.
  */
 public final class CarConfig {

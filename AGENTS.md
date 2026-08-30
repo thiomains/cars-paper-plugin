@@ -17,7 +17,7 @@ Artefakt: `target/auto-<version>.jar`. Version im `pom.xml` pflegen (wird per Fi
 ## Paper-Plugin-Fallen (alle live gesehen, nicht raten)
 
 - Descriptor ist `paper-plugin.yml` (kein `plugin.yml`!). API-Version: `api-version: '26.2'`.
-- Befehle dürfen NICHT in der YAML deklariert werden — das wirft beim Enable `UnsupportedOperationException`. Stattdessen zur Laufzeit: `registerCommand(String, String, BasicCommand)` aus `JavaPlugin` (siehe `CarCommand.java`).
+- Befehle dürfen NICHT in der YAML deklariert werden — das wirft beim Enable `UnsupportedOperationException`. Stattdessen zur Laufzeit: `registerCommand(String, String, Collection<String>, BasicCommand)` aus `JavaPlugin` (siehe `CarCommand.java`); der Befehl heißt `car`, `auto` ist Alias.
 - paper-api-Koordinaten: `io.papermc.paper:paper-api:[26.2.build,)` vom Repo `https://repo.papermc.io/repository/maven-public/` (nicht Maven Central).
 - Download-API für Server-JARs ist `fill.papermc.io` (die alte api.papermc.io v2 ist sunset).
 - Seit der Dimensions-Migration liegt die Overworld-Region unter `world/dimensions/minecraft/overworld/` (auch `entities/`), nicht in `world/region/`.
@@ -28,12 +28,13 @@ Artefakt: `target/auto-<version>.jar`. Version im `pom.xml` pflegen (wird per Fi
 ```bash
 cd /tmp/opencode/papertest   # enthält paper.jar (26.2 b119) + eula.txt
 cp target/auto-*.jar plugins/
-( sleep 50; echo "auto sim 1.5"; sleep 5; echo "stop"; ) \
+( sleep 50; echo "car sim 1.5"; sleep 5; echo "stop"; ) \
   | "$JAVA_HOME/bin/java" -Xmx1536M -jar paper.jar nogui
 ```
 
-- `/auto sim <speed> [drift] [gap] [ice] [stairs] [drive]` (negativer speed = Rückwärtsfahrt vom Startpunkt weg) baut eine kontrollierte Strecke (flach, y=60, drei Spalten breit x=199..201) bei x/z=200/200 mit Steinwand bei z+6 und fährt los — loggt `[Sim]`-Zeilen pro Tick (Speed, vf, slip, grounded, grip, blocked, pos). Erwartung Regression: Wand-Kontakt bei z≈204,7 (die Nase berührt die Wand — Footprint 1,8 × 2,5 Blöcke, halbe Länge 1,25!), danach leichter Rückprall ~1–1,5 Blöcke (crash-restitution 25 %, Rebound-Cap 0,10 Bl/tick; `crash-restitution 0` = alter harter Stopp), kein Tunneling über z=206 hinaus. Anmerkung: die Sample-Quantisierung (~0,37 Blöcke) dominiert die letzte Stelle — beobachtet wurde z=204,61; entscheidend ist Nase-Freiheit/O(0,15-Abstand) und kein Tunneling. `gap` entfernt Boden bei z+2..+5 (4 Blöcke — kürzere Löcher ≤2 überbrückt der Footprint physikalisch korrekt, weil stets ein Rad gestützt bleibt; Flugphase grounded=false, grip=0,00). `ice` = Packeis (grip=0,15, langer Auslauf ohne Standfest-Raste), `stairs` lässt die Strecke ab z+3 stufenweise abfallen (bergab: durchgehend grounded, Energie-Gewinn + gefälle-skalierter Schub sichtbar), `drive` = Gas-Simulation (weiche Annäherung an max-speed).
-- `/auto config get/set` wirkt LIVE (Reload ohne Restart), `/auto prefs` ist pro Spieler.
+- `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]` (nur Konsole, taucht im Autocomplete nicht auf; negativer speed = Rückwärtsfahrt vom Startpunkt weg) baut eine kontrollierte Strecke (flach, y=60, drei Spalten breit x=199..201) bei x/z=200/200 mit Steinwand bei z+6 und fährt los — loggt `[Sim]`-Zeilen pro Tick (Speed, vf, slip, grounded, grip, blocked, pos). Erwartung Regression: Wand-Kontakt bei z≈204,7 (die Nase berührt die Wand — Footprint 1,8 × 2,5 Blöcke, halbe Länge 1,25!), danach leichter Rückprall ~1–1,5 Blöcke (crash-restitution 25 %, Rebound-Cap 0,10 Bl/tick; `crash-restitution 0` = alter harter Stopp), kein Tunneling über z=206 hinaus. Anmerkung: die Sample-Quantisierung (~0,37 Blöcke) dominiert die letzte Stelle — beobachtet wurde z=204,61; entscheidend ist Nase-Freiheit/O(0,15-Abstand) und kein Tunneling. `gap` entfernt Boden bei z+2..+5 (4 Blöcke — kürzere Löcher ≤2 überbrückt der Footprint physikalisch korrekt, weil stets ein Rad gestützt bleibt; Flugphase grounded=false, grip=0,00). `ice` = Packeis (grip=0,15, langer Auslauf ohne Standfest-Raste), `stairs` lässt die Strecke ab z+3 stufenweise abfallen (bergab: durchgehend grounded, Energie-Gewinn + gefälle-skalierter Schub sichtbar), `drive` = Gas-Simulation (weiche Annäherung an max-speed).
+- Die Teststrecke braucht eine **Flachwelt** (`level-type=minecraft:flat`): in generiertem Gelände steht der hintere Kollisions-Sample (z−1,25) außerhalb des freigeräumten Bereichs z+0..+8, das Auto meldet sofort `blocked=true` und fährt keinen Meter.
+- `/car config <key> <wert>` wirkt LIVE (Reload ohne Restart), `/car prefs` ist pro Spieler.
 
 ## Architektur-Kernstellen (nicht aus Dateinamen erkennbar)
 
@@ -46,8 +47,9 @@ cp target/auto-*.jar plugins/
 
 ## Config-Konventionen
 
-- `config.yml` ist menschenlesbar (km/h, m/s², %, °/s); `CarConfig.reload()` konvertiert in Blöcke/Tick UND clampt jeden Wert über `clampHumanValue` auf dessen Sinn-Bereich — genau denselben wirksamen Wert zeigt `/auto config get` an (ein Display-RoHWert-Bug zeigte sonst abweichende Zahlen). Neue Keys müssen in `CarConfig.NUMBER_KEYS`/`BOOL_KEYS` (Komplettierung + Migration lesen daraus).
+- `config.yml` ist menschenlesbar (km/h, m/s², %, °/s); `CarConfig.reload()` konvertiert in Blöcke/Tick UND clampt jeden Wert über `clampHumanValue` auf dessen Sinn-Bereich — genau denselben wirksamen Wert zeigt `/car config` an (ein Display-RoHWert-Bug zeigte sonst abweichende Zahlen). Neue Keys müssen in `CarConfig.NUMBER_KEYS`/`BOOL_KEYS` (Komplettierung + Migration lesen daraus).
 - `config-version` im YAML: bei Änderung hochzählen (`AutoPlugin.CONFIG_VERSION`, aktuell 8); die Migration sichert automatisch als `config.veraltet.yml` und übernimmt unveränderte Keys.
+- Permissions: `car.use`/`car.prefs` (Default true), `car.give`/`car.config` (Default op) stehen in der `paper-plugin.yml`; die Pro-Key-Nodes `car.config.<key>` und der Sammelknoten `car.config.*` entstehen zur Laufzeit aus `CarConfig.NUMBER_KEYS`/`BOOL_KEYS` (`CarPermissions.register`) — ein neuer Config-Key bekommt seine Node damit automatisch. Lesen deckt `car.config` ab, Setzen braucht die Key-Node. Geprüft wird nur über `hasPermission`, nie `isOp`, damit Permissions-Plugins überschreiben können. `car.give` hieß früher `auto.give`.
 - Spieler-Prefs liegen in `prefs.yml` (`PlayerPrefs`); der frühere Key `reverse_invert_mouse` wurde zu `reverse_invert` umbenannt und wird beim Laden still migriert. Keys: `mouse_steer`, `reverse_invert`, `actionbar` (Hauptschalter), `actionbar_speed`, `actionbar_grip` (Grip-Budget-Balken; ≥100 % = Reifen am Limit; zählt Quer- UND Pedalkraft als Traktionskreis); alles Default an.
 - Untersteuer-Sound ist `ENTITY_HORSE_DEATH` mit Pitch 0 (gewollt so, Cooldown 18 Ticks über `tickCount` in `DriveTask` — tick-basiert statt Wall-Clock, lag-stabil).
 - Physik-Konstanten gelten pro Tick (20-TPS-Annahme): bei anhaltendem Server-Lag driften reale Beschleunigungs-/Bremswerte. Bewusste, hier dokumentierte Limitation — keine dt-Kompensation implementiert.
