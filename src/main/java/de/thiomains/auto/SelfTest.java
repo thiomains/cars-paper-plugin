@@ -113,7 +113,8 @@ public final class SelfTest extends BukkitRunnable {
 
     /** ticks = 0 bedeutet: kein Fahrszenario, die Prüfung läuft sofort. */
     private record Scenario(String name, boolean knownFail, int ticks, double startSpeed, boolean drive,
-                            double minY, Consumer<Lane> build, Function<Run, Result> check) {
+                            double minY, float yaw, boolean negativeLane, Consumer<Car> tune,
+                            Consumer<Lane> build, Function<Run, Result> check) {
     }
 
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
@@ -121,12 +122,31 @@ public final class SelfTest extends BukkitRunnable {
         add(name, knownFail, ticks, speed, drive, GROUND_Y - 3.0, build, check);
     }
 
+    /** Variante mit Nachjustierung direkt nach dem Spawn (Drift, Querbewegung). */
+    private void add(String name, boolean knownFail, int ticks, double speed, boolean drive, float yaw,
+                     Consumer<Car> tune, Consumer<Lane> build, Function<Run, Result> check) {
+        if (filter == null || name.contains(filter)) {
+            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+                    false, tune, build, check));
+        }
+    }
+
+    /** Variante mit Blickrichtung und optional negativen Weltkoordinaten (Rundungs-Verhalten von floor). */
+    private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
+                     float yaw, boolean negativeLane, Consumer<Lane> build, Function<Run, Result> check) {
+        if (filter == null || name.contains(filter)) {
+            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+                    negativeLane, null, build, check));
+        }
+    }
+
     /** minY ist die Absturz-Sicherung: faellt das Auto tiefer, hat es die Bahn verlassen und
      *  jede weitere Auswertung waere Unsinn (die Flachwelt liegt 120 Bloecke tiefer). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
                      double minY, Consumer<Lane> build, Function<Run, Result> check) {
         if (filter == null || name.contains(filter)) {
-            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, minY, build, check));
+            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, minY, 0f, false, null,
+                    build, check));
         }
     }
 
@@ -380,6 +400,77 @@ public final class SelfTest extends BukkitRunnable {
             wall(lane, 20, GROUND_Y);
         }, microCheck("Wechselstreifen Farmland/Stein"));
 
+        // 16b — Farmland-Kante unter realistischen Bedingungen: die gerade Anfahrt im
+        // 5-Bloecke-Streifen ist nachweislich in Ordnung, gemeldet wird trotzdem Steckenbleiben.
+        // Deshalb hier die Bedingungen, die der schmale Streifen NICHT hat.
+        edgeCase("edge-diag-20", 20f, false, 1.0, true, 24, false);
+        edgeCase("edge-diag-45", 45f, false, 1.0, true, 24, false);
+        edgeCase("edge-negative-coords", 0f, true, 1.0, true, 24, false);
+        edgeCase("edge-creep", 0f, false, 0.02, true, 24, false);
+        edgeCase("edge-standstill", 0f, false, 0.0, true, 24, false);
+        edgeCase("edge-coast", 0f, false, 0.3, false, 24, false);
+        edgeCase("edge-x-axis", 90f, false, 1.0, true, 24, false);
+
+        // Fahrt genau AUF der Kante: linke Raeder auf Farmland, rechte auf Stein.
+        add("edge-seam", false, 120, 1.0, true, 0f, false, lane -> {
+            plate(lane, 10, -6, 24, 99, Material.STONE, Material.STONE);
+            for (int x = lane.baseX() - 9; x <= lane.baseX(); x++) {
+                for (int z = -5; z <= 23; z++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.FARMLAND, false);
+                }
+            }
+        }, run -> {
+            double far = travelled(run);
+            if (far < MICRO_STEP_MIN_TRAVEL) {
+                return Result.fail(fmt("bleibt nach %.3f Bloecken auf der Laengskante haengen (v=%.3f)",
+                        far, lastSample(run).speed()));
+            }
+            return Result.pass(fmt("%.3f Bloecke auf der Laengskante", far));
+        });
+
+        // Farmland-Feld mitten in Stein: das Auto faehrt hinein und muss wieder heraus.
+        add("edge-patch", false, 120, 1.0, true, 0f, false, lane -> {
+            plate(lane, 10, -6, 24, 99, Material.STONE, Material.STONE);
+            for (int x = lane.baseX() - 2; x <= lane.baseX() + 2; x++) {
+                for (int z = 2; z <= 8; z++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.FARMLAND, false);
+                }
+            }
+        }, run -> {
+            double far = travelled(run);
+            if (far < 12.0) {
+                return Result.fail(fmt("kommt aus dem Farmland-Feld nicht heraus: %.3f Bloecke (v=%.3f)",
+                        far, lastSample(run).speed()));
+            }
+            return Result.pass(fmt("durch das Feld und wieder heraus, %.3f Bloecke", far));
+        });
+
+        // Beim echten Fahren ist immer Lenkung im Spiel: einmal drehend ueber die Kante,
+        // einmal rein seitlich hineinrutschend (Querbewegung trifft die Kante an der Flanke).
+        add("edge-drift", false, 120, 1.0, true, 0f, car -> car.setSimDrift(true), lane ->
+                plate(lane, 14, -6, 24, 4, Material.FARMLAND, Material.STONE), run -> {
+            double far = travelled(run);
+            if (far < MICRO_STEP_MIN_TRAVEL) {
+                return Result.fail(fmt("bleibt drehend nach %.3f Bloecken an der Kante haengen (v=%.3f)",
+                        far, lastSample(run).speed()));
+            }
+            return Result.pass(fmt("%.3f Bloecke drehend ueber die Kante", far));
+        });
+
+        add("edge-sideways", false, 120, 0.0, false, 90f, car -> {
+            car.setVelX(0.0);
+            car.setVelZ(0.8);
+        }, lane -> plate(lane, 14, -6, 24, 4, Material.FARMLAND, Material.STONE), run -> {
+            double far = travelled(run);
+            if (far < 4.0) {
+                return Result.fail(fmt("rutscht quer nur %.3f Bloecke bis zur Kante (v=%.3f)",
+                        far, lastSample(run).speed()));
+            }
+            return Result.pass(fmt("%.3f Bloecke quer ueber die Kante", far));
+        });
+
         // 17 — Diagnose statt Test: echte Kollisionshoehen der Kandidaten-Materialien.
         add("probe-support-tops", false, 0, 0, false, lane -> {
         }, run -> {
@@ -494,6 +585,20 @@ public final class SelfTest extends BukkitRunnable {
         });
     }
 
+    /** Farmland-Kante quer zur Fahrt auf breiter Platte — variiert Winkel, Tempo und Koordinaten. */
+    private void edgeCase(String name, float yaw, boolean negative, double speed, boolean drive,
+                          int length, boolean knownFail) {
+        add(name, knownFail, 120, speed, drive, yaw, negative, lane ->
+                plate(lane, 14, -6, length, 4, Material.FARMLAND, Material.STONE), run -> {
+            double far = travelled(run);
+            if (far < MICRO_STEP_MIN_TRAVEL) {
+                return Result.fail(fmt("bleibt nach %.3f Bloecken an der Kante haengen (v=%.3f, z=%.3f)",
+                        far, lastSample(run).speed(), lastSample(run).z() - run.lane().baseZ()));
+            }
+            return Result.pass(fmt("%.3f Bloecke ueber die Kante", far));
+        });
+    }
+
     /** Ganze Stufe (1 Block) von einem Belag mit reduzierter Oberkante aus. */
     private void stepUpFrom(String name, Material surface, boolean knownFail) {
         add(name, knownFail, 100, 1.0, true, lane -> {
@@ -569,7 +674,9 @@ public final class SelfTest extends BukkitRunnable {
         samples.clear();
         waited = 0;
         World world = Bukkit.getWorlds().get(0);
-        lane = new Lane(world, 200 + index * LANE_SPACING, 200, GROUND_Y);
+        lane = current.negativeLane()
+                ? new Lane(world, -600 - index * LANE_SPACING, -600, GROUND_Y)
+                : new Lane(world, 200 + index * LANE_SPACING, 200, GROUND_Y);
         clearLane(lane);
         current.build().accept(lane);
         if (current.ticks() == 0) {
@@ -578,9 +685,14 @@ public final class SelfTest extends BukkitRunnable {
             return;
         }
         car = carManager.spawnCar(new Location(world, lane.baseX() + 0.5, lane.groundY(),
-                lane.baseZ() + 0.5, 0f, 0f), 0f);
-        car.setSpeed(current.startSpeed());
+                lane.baseZ() + 0.5, current.yaw(), 0f), current.yaw());
+        double rad = Math.toRadians(current.yaw());
+        car.setVelX(-Math.sin(rad) * current.startSpeed());
+        car.setVelZ(Math.cos(rad) * current.startSpeed());
         car.setSimDrive(current.drive());
+        if (current.tune() != null) {
+            current.tune().accept(car);
+        }
         car.setSimObserver(samples::add);
         car.setSimTicks(current.ticks());
     }
@@ -698,6 +810,25 @@ public final class SelfTest extends BukkitRunnable {
         }
     }
 
+    /** Breite Platte mit Umrandung: unterhalb von zSplit der Belag, ab zSplit der Vollblock.
+     *  Die Mauer rundherum haelt das Auto auf der Platte — sonst faehrt es bei schraeger
+     *  Fahrt seitlich herunter und jede Messung ist wertlos. */
+    private void plate(Lane lane, int halfWidth, int zFrom, int zTo, int zSplit,
+                       Material surface, Material beyond) {
+        for (int x = lane.baseX() - halfWidth; x <= lane.baseX() + halfWidth; x++) {
+            for (int z = zFrom; z <= zTo; z++) {
+                boolean border = x == lane.baseX() - halfWidth || x == lane.baseX() + halfWidth
+                        || z == zFrom || z == zTo;
+                for (int y = GROUND_Y; y <= GROUND_Y + 6; y++) {
+                    lane.world().getBlockAt(x, y, lane.baseZ() + z)
+                            .setType(border && y <= GROUND_Y + 3 ? Material.STONE : Material.AIR, false);
+                }
+                lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                        .setType(z < zSplit ? surface : beyond, false);
+            }
+        }
+    }
+
     private void snowLayer(Lane lane, int zRel, int layers) {
         for (int x = lane.baseX() - 2; x <= lane.baseX() + 2; x++) {
             var block = lane.world().getBlockAt(x, GROUND_Y, lane.baseZ() + zRel);
@@ -758,6 +889,13 @@ public final class SelfTest extends BukkitRunnable {
             min = Math.min(min, list.get(i).z());
         }
         return min - run.lane().baseZ();
+    }
+
+    /** Luftlinie vom Startpunkt — fuer Szenarien, die nicht entlang +Z fahren. */
+    private double travelled(Run run) {
+        double sx = run.lane().baseX() + 0.5;
+        double sz = run.lane().baseZ() + 0.5;
+        return run.samples().stream().mapToDouble(s -> Math.hypot(s.x() - sx, s.z() - sz)).max().orElse(0);
     }
 
     private SimSample lastSample(Run run) {

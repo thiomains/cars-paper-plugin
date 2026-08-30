@@ -50,8 +50,12 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
 - Aktuell offen (`knownFail`): **von Belaegen mit reduzierter Oberkante (Farmland/Grasweg 0,9375,
   Schlamm/Seelensand 0,875) ist eine ganze 1-Block-Stufe nicht befahrbar** — die Hindernis-Oberkante
   liegt dann 1,0625 bzw. 1,125 ueber dem Auto und reisst `MAX_STEP` (1,0). Von Stein aus geht
-  dieselbe Stufe. Die flache 1/16-Kante (Farmland -> Vollblock ohne Hoehenwechsel) ist dagegen
-  nachweislich in Ordnung.
+  dieselbe Stufe.
+- Die flache 1/16-Kante (Farmland -> Vollblock auf gleicher Hoehe) ist dagegen nachweislich in
+  Ordnung — die `edge-*`-Szenarien decken gerade/schraege/quere/drehende Anfahrt, Kriechtempo,
+  Anfahren aus dem Stand, Fahrt laengs auf der Kante, ein Farmland-Feld mitten in Stein und
+  negative Weltkoordinaten ab. Wer dort erneut ein Steckenbleiben meldet: erst pruefen, ob das
+  Ziel nicht doch einen ganzen Block hoeher liegt (dann greift der Punkt darueber).
 - Nicht automatisierbar und weiterhin manuell: echte Spielereingaben (Mauslenkung, Actionbar),
   Modell-Optik (Pitch/Roll-Vorzeichen sind headless unsichtbar), Client-Autocomplete, Resourcepack.
 
