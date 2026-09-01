@@ -39,7 +39,7 @@ public final class DriveTask extends BukkitRunnable {
     private static final double GRAVITY_ACCEL = 0.08;
     private static final double ALIGN_FRACTION = 0.65;
     private static final double FRICTION_FRACTION = 0.5;
-    private static final double SPEED_EPSILON = 0.05;
+    static final double SPEED_EPSILON = 0.05;
     private static final double SLIP_SOUND_MIN_DEG = 12.0;
     private static final double SAMPLE_STEP = 0.4;
     static final double MAX_STEP = 1.0;
@@ -52,7 +52,7 @@ public final class DriveTask extends BukkitRunnable {
     private static final double LANDING_SOUND_MIN_FALL = 0.5; // ~36 km/h vertikal
     private static final double LANDING_SPEED_KEEP = 0.7;
     static final double MAX_STEP_DOWN = 1.2;
-    private static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
+    static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
     private static final double OVERSPEED_DOWNHILL_FACTOR = 1.5;
     private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
     private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
@@ -150,13 +150,15 @@ public final class DriveTask extends BukkitRunnable {
         double grip = grounded ? gripSum / 4.0 : 0.0;
         double gripEff = grip;
 
-        Input input = driver != null ? driver.getCurrentInput() : null;
+        // Ohne Fahrer greift die Simulations-Eingabe: damit laufen Gas, Bremse, Handbremse
+        // und Lenkung im Selftest durch genau diesen Code und nicht durch eine Kopie.
+        Input input = driver != null ? driver.getCurrentInput() : car.getSimInput();
         boolean pedals = input != null && (input.isForward() || input.isBackward());
         boolean handbrake = grounded && input != null && input.isJump() && startAbs > SPEED_EPSILON;
         double steerDemandDeg = 0.0;
         double vfBeforeForces = vf;
 
-        if (driver != null && grounded) {
+        if (input != null && grounded) {
             if (handbrake) {
                 gripEff = grip * config.handbrakeGrip;
                 vf = approachZero(vf, config.handbrakeDeceleration * grip);
@@ -211,13 +213,6 @@ public final class DriveTask extends BukkitRunnable {
                 spinVel = 0.0;
             }
             car.setSpinVel(spinVel);
-        }
-
-        // Simulations-Gas: Gas geben ohne Fahrer (Spiegelbild des W-Falls aus applyInput),
-        // damit das Losfahren aus dem Stand headless verifizierbar bleibt
-        if (car.isSimDrive() && driver == null && grounded) {
-            vf = Math.min(vf + config.acceleration * grip
-                    * clamp(1.0 - vf / Math.max(config.maxSpeed, 1.0e-9), 0.0, 1.0), config.maxSpeed);
         }
 
         // Motorbremse nur bei losgelassenem Pedal, Luftwiderstand immer.
@@ -533,7 +528,8 @@ public final class DriveTask extends BukkitRunnable {
     }
 
     /** Geforderte Lenkrate in Grad/Tick: A/D hat Vorrang, sonst Mausfolge (optional abschaltbar);
-     *  die Rückwärts-Invertierung gilt für beide Eingabewege, wenn der Spieler sie nicht deaktiviert hat. */
+     *  die Rückwärts-Invertierung gilt für beide Eingabewege, wenn der Spieler sie nicht deaktiviert hat.
+     *  driver ist null, wenn die Simulation lenkt — dann gibt es weder Maus noch Prefs. */
     private double steerDemand(Input input, Player driver, float yaw, double vf, double allowed) {
         boolean left = input.isLeft();
         boolean right = input.isRight();
@@ -544,12 +540,12 @@ public final class DriveTask extends BukkitRunnable {
             diff = -allowed;
         } else if (right) {
             diff = allowed;
-        } else if (prefs.mouseSteer(driver.getUniqueId())) {
+        } else if (driver != null && prefs.mouseSteer(driver.getUniqueId())) {
             diff = wrapDeg(driver.getLocation().getYaw() - yaw);
         } else {
             diff = 0;
         }
-        if (vf < 0 && prefs.reverseInvert(driver.getUniqueId())) {
+        if (vf < 0 && driver != null && prefs.reverseInvert(driver.getUniqueId())) {
             diff = -diff;
         }
         return diff;

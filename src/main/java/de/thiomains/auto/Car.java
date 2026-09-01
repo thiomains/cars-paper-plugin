@@ -29,7 +29,7 @@ public final class Car {
     private long lastUndersteerSoundTick = -1000;
     private int simTicks;
     private boolean simDrift;
-    private boolean simDrive;
+    private SimInput simInput;
     private java.util.function.Consumer<SimSample> simObserver;
 
     public Car(ArmorStand base, ItemDisplay model, Interaction hitbox) {
@@ -166,12 +166,18 @@ public final class Car {
         this.simDrift = simDrift;
     }
 
-    public boolean isSimDrive() {
-        return simDrive;
+    /** Fahrer-Eingabe ohne Fahrer; null = niemand am Steuer (Auto rollt aus). */
+    public SimInput getSimInput() {
+        return simInput;
     }
 
-    public void setSimDrive(boolean simDrive) {
-        this.simDrive = simDrive;
+    public void setSimInput(SimInput simInput) {
+        this.simInput = simInput;
+    }
+
+    /** Bequemlichkeit fuer "Gas geben" — die haeufigste Simulations-Eingabe. */
+    public void setSimDrive(boolean drive) {
+        this.simInput = drive ? SimInput.GAS : null;
     }
 
     /** Sammelt die Tick-Werte statt sie zu loggen (vom SelfTest gesetzt); null = normales [Sim]-Log. */

@@ -95,8 +95,17 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   Amboss, Zaun, Schiene, Druckplatte, Weizen, Seerose, Pulverschnee, Spinnennetz, Kaktus …).
   Wer eine Stelle im Spiel meldet, an der das Auto haengt: erst `--only` auf den passenden
   Sweep, dann den Belag der Fundstelle in die Palette in `SelfTest.java` aufnehmen.
-- Nicht automatisierbar und weiterhin manuell: echte Spielereingaben (Mauslenkung, Actionbar),
-  Modell-Optik (Pitch/Roll-Vorzeichen sind headless unsichtbar), Client-Autocomplete, Resourcepack.
+- **Fahrer-Eingaben ohne Fahrer:** `SimInput` implementiert `org.bukkit.Input` (eine reine
+  Schnittstelle aus sieben Boolean-Gettern). `DriveTask` liest ohne Fahrer
+  `car.getSimInput()`, damit Gas, Bremse, Handbremse, Rueckwaertsgang und A/D-Lenkung durch
+  **dieselbe** Stelle laufen wie beim Spieler (`applyInput`, Handbrems-Zweig, Lenk-Deckel).
+  Vorher hatte die Simulation die Gas-Formel nachgebaut — der Test prueft seitdem die
+  Produktivstelle statt einer Kopie. Der Sweep `driver-input` deckt Fussbremse, Handbremse,
+  W+S, Ausrollen, Rueckwaerts-Anfahren, `max-speed`-Limiter, Lenk-Deckel, `turn-min-speed`
+  und den Handbrems-Grip ab. `car.setSimDrive(true)` bleibt als Kurzform fuer Vollgas.
+- Nicht automatisierbar und weiterhin manuell: **Maus**lenkung und Spieler-Prefs (beides braucht
+  einen echten Spieler), Actionbar, Modell-Optik (Pitch/Roll-Vorzeichen sind headless
+  unsichtbar), Client-Autocomplete, Resourcepack.
 
 **Manuell (einzelne Fahrt ansehen):** `/car sim <speed> [drift] [gap] [ice] [stairs] [drive]`
 (nur Konsole, taucht im Autocomplete nicht auf; negativer speed = Rueckwaertsfahrt vom Startpunkt weg)
@@ -115,7 +124,7 @@ Kollisions-Sample im Berg und das Auto meldet sofort `blocked=true` — dafuer e
 ## Architektur-Kernstellen (nicht aus Dateinamen erkennbar)
 
 - Ein Auto = ArmorStand (Sitz, PDC-Marker `auto:car`) + ItemDisplay (Modell, Passagier) + Interaction (Klick-Hitbox, Passagier). Fahrer = Spieler-Passagier auf dem ArmorStand. Entity-Aufbau zentral in `CarManager` (spawnCar / reRegister / ensureParts). Sitzhöhe hängt am SCALE-Attribut des Stands (`SEAT_SCALE` ≈ +0,1 Blöcke über Standard); `MODEL_Y_OFFSET` hält das Modell dagegen fest.
-- Input: `player.getCurrentInput()` (semantisch, respektiert Keybinds; funktioniert auch beim Reiten nicht steuerbarer Entities — Fahrer muss aber serverseitig wirklich Passagier sein).
+- Input: `player.getCurrentInput()` (semantisch, respektiert Keybinds; funktioniert auch beim Reiten nicht steuerbarer Entities — Fahrer muss aber serverseitig wirklich Passagier sein). Ohne Fahrer greift `car.getSimInput()` (`SimInput implements org.bukkit.Input`) — derselbe Pfad, nur ohne Spieler; Maus-Lenkung und Prefs sind dort naturgemäß aus.
 - Physik (`DriveTask`): Zustand ist ein Geschwindigkeitsvektor (`Car.velX/velZ`) + `yaw` (geglättete Lenk-Drehrate `Car.yawVel`, Crash-Drehrate `Car.spinVel`), kein Skalar. Grip gibt es NUR bei Bodenkontakt: `grounded`/Grip kommen aus VIER Rad-Samples (±0,9 längs, ±0,7 quer, je 1 Block Federungstoleranz via `wheelSupport`) — halb über der Kante = halber Grip, in der Luft kein Antrieb/Bremse/Lenkung/ALIGN (ballistisch, nur Drag). Antrieb/Bremse wirken auf die Fahrtrichtungskomponente `vf`, weich Richtung `max-speed` begrenzt (Faktor `1 − vf/max` statt hartem Cut); Motorbremse × grip nur ohne Fahrpedal am Boden, Drag immer. Lenkung = min(Lenkrad-Anschlag `turn-curvature` °/m × |v|, Grip-Budget `maxLatGrip·grip/|v|`); der Vektor folgt mit `ALIGN_FRACTION=0.65` des Budgets der **Rollrichtung** (`travelYaw` = yaw bzw. yaw+180 bei Rückwärtsfahrt — niemals stur yaw!), Rotation nur oberhalb `turn-min-speed`; Schlupf wird durch laterale Reibung gefressen (`FRICTION_FRACTION`). Handbremse = Sprungtaste: `handbrake-deceleration` × Grip auf vf, Folge-Grip × `handbrake-grip` — die Lenkung behält vollen Grip (Vorderräder). Bei Wandkontakt darf im Stand rangiert werden (`CRAWL_TURN_DEG`). Standfest-Hartschnapp unter ~0,5 km/h nur bei grip ≥ 0,4 — auf Eis rollt das Auto aus.
 - Kollision (`resolveStep`): achsenweise, substep-weise alle 0,4 Blöcke, mit yaw-ausgerichtetem 3×3-Footprint (Nase/Heck/Ecken, 1,8×2,5 Blöcke = reale Maße; Interaction-Hitbox 2,5²×1,8) und anderen Autos als Hindernis. Stufen kommen aus der Kollisionsform (`supportTop`, max. 1 Block, Slabs/Treppen befahrbar); pro Sample folgt die Fahrzeughöhe dem Boden bis 1,2 Blöcke abwärts (`followGroundDown`, bergab kein Losfliegen) + `downhill-assist` gibt pro Abstieg Schub in Fahrtrichtung. Bei Blockade steht das Auto am letzten freien Sample — und reagiert physikalisch: gedeckelte Restitution (`crash-restitution`, positiver Abprall ≤0,10 Bl/tick via `CRASH_REBOUND_MAX`; Auto-Auto nur halb, ohne Spin, Hitch-Guard unter ~5 km/h = `CRASH_MIN_SPEED`) plus Drehimpuls aus dem Aufprall-Hebel (`crash-spin` × τ = Hebel × Impuls, landet in `Car.spinVel` und dreht NUR die Karosse; der Geschwindigkeitsvektor folgt grip-begrenzt per ALIGN hinterher → emergentes Schleudern; Decay am Boden × (1 − 0,25·grip), in der Luft nahezu erhalten). `embedded` prüft nur die Fahrzeugmitte (Fuß ragt über Niveau ODER Kopf massiv) — Nase/Heck NICHT (in der Luft neben Böschung sonst Fehlalarm → Tunnel-Bug!).
 - Vertikal: Fall mit Substep-Abtastung bis `max-fall-speed` (konfigurierbar, Default 144 km/h), Landung snappt auf die echte Blockoberkante (Slab-Höhe!), harte Landung (≥~36 km/h vertikal) dämpft quer und ist hörbar. Wasser blockiert nicht, bremst stark und trägt nicht → Auto sinkt (Lava bleibt Wand); der Sink-Fall nähert sich dabei asymptotisch `max-sink-speed` (Default 9 km/h, Faktor 0,85/Tick) statt wie ein Stein durchzurauschen.

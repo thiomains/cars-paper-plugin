@@ -147,7 +147,7 @@ public final class SelfTest extends BukkitRunnable {
     /** Ein einzelner Fahrfall: eigene Bahn, eigenes Auto, eigene Pruefung.
      *  ticks = 0 bedeutet: kein Fahrszenario, die Pruefung laeuft sofort.
      *  Ein normales Szenario besteht aus genau einem Fall, ein Sweep aus vielen. */
-    private record Case(String label, boolean knownFail, int ticks, double startSpeed, boolean drive,
+    private record Case(String label, boolean knownFail, int ticks, double startSpeed, SimInput input,
                         double minY, float yaw, boolean negativeLane, Area clear, Consumer<Car> tune,
                         Consumer<Lane> build, Function<Run, Result> check) {
     }
@@ -165,6 +165,11 @@ public final class SelfTest extends BukkitRunnable {
     private record Scenario(String name, boolean knownFail, List<Case> cases) {
     }
 
+    /** true = Vollgas, false = niemand am Steuer (Auto rollt aus). */
+    private static SimInput gas(boolean drive) {
+        return drive ? SimInput.GAS : null;
+    }
+
     private void addCase(String name, boolean knownFail, Case single) {
         if (filter == null || name.contains(filter)) {
             scenarios.add(new Scenario(name, knownFail, List.of(single)));
@@ -179,14 +184,14 @@ public final class SelfTest extends BukkitRunnable {
     /** Variante mit Nachjustierung direkt nach dem Spawn (Drift, Querbewegung). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive, float yaw,
                      Consumer<Car> tune, Consumer<Lane> build, Function<Run, Result> check) {
-        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, gas(drive), GROUND_Y - 3.0, yaw,
                 false, FULL_CLEAR, tune, build, check));
     }
 
     /** Variante mit Blickrichtung und optional negativen Weltkoordinaten (Rundungs-Verhalten von floor). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
                      float yaw, boolean negativeLane, Consumer<Lane> build, Function<Run, Result> check) {
-        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, gas(drive), GROUND_Y - 3.0, yaw,
                 negativeLane, FULL_CLEAR, null, build, check));
     }
 
@@ -194,7 +199,7 @@ public final class SelfTest extends BukkitRunnable {
      *  jede weitere Auswertung waere Unsinn (die Flachwelt liegt 120 Bloecke tiefer). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
                      double minY, Consumer<Lane> build, Function<Run, Result> check) {
-        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, minY, 0f, false,
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, gas(drive), minY, 0f, false,
                 FULL_CLEAR, null, build, check));
     }
 
@@ -216,16 +221,29 @@ public final class SelfTest extends BukkitRunnable {
 
         Sweep run(String label, boolean knownFail, double speed, boolean drive, double minY,
                   Consumer<Lane> build, Function<Run, Result> check) {
-            if (filter == null || name.contains(filter) || label.contains(filter)) {
-                cases.add(new Case(label, knownFail, SWEEP_TICKS, speed, drive, minY, 0f, false,
-                        clear, null, build, check));
-            }
-            return this;
+            return run(label, knownFail, SWEEP_TICKS, speed, gas(drive), 0f, minY, build, check);
         }
 
         Sweep run(String label, boolean knownFail, double speed, boolean drive,
                   Consumer<Lane> build, Function<Run, Result> check) {
             return run(label, knownFail, speed, drive, GROUND_Y - 3.0, build, check);
+        }
+
+        /** Vollform mit eigener Tick-Zahl, Fahrer-Eingabe und Blickrichtung. */
+        Sweep run(String label, boolean knownFail, int ticks, double speed, SimInput input, float yaw,
+                  double minY, Consumer<Lane> build, Function<Run, Result> check) {
+            return run(label, knownFail, ticks, speed, input, yaw, minY, clear, build, check);
+        }
+
+        /** Vollform mit eigenem Raeum-Bereich — Rueckwaertsfahrt und Vollgas brauchen
+         *  andere Strecken als die kurze Standard-Bahn. */
+        Sweep run(String label, boolean knownFail, int ticks, double speed, SimInput input, float yaw,
+                  double minY, Area area, Consumer<Lane> build, Function<Run, Result> check) {
+            if (filter == null || name.contains(filter) || label.contains(filter)) {
+                cases.add(new Case(label, knownFail, ticks, speed, input, minY, yaw, false,
+                        area, null, build, check));
+            }
+            return this;
         }
 
         void done() {
@@ -679,6 +697,7 @@ public final class SelfTest extends BukkitRunnable {
 
         // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel
         // und einen breiten Querschnitt echter Bloecke.
+        driverInputs();
         stepUpHeights();
         stepUpFromSurfaces();
         stepDownHeights();
@@ -883,7 +902,7 @@ public final class SelfTest extends BukkitRunnable {
             double rad = Math.toRadians(spec.yaw());
             a.car.setVelX(-Math.sin(rad) * spec.startSpeed());
             a.car.setVelZ(Math.cos(rad) * spec.startSpeed());
-            a.car.setSimDrive(spec.drive());
+            a.car.setSimInput(spec.input());
             if (spec.tune() != null) {
                 spec.tune().accept(a.car);
             }
@@ -1150,6 +1169,268 @@ public final class SelfTest extends BukkitRunnable {
 
     private static String pad(String name) {
         return name.length() >= 24 ? name : name + " ".repeat(24 - name.length());
+    }
+
+
+    // ────────────────────────────── Fahrer-Eingaben ──────────────────────────────
+    //
+    // Gas, Bremse, Handbremse, Rueckwaertsgang und Lenkung liefen bis hierher in KEINEM Test:
+    // ohne Fahrer gab es keine Eingabe, und die Simulation hatte die Gas-Formel nachgebaut
+    // statt sie aufzurufen. Mit SimInput (org.bukkit.Input ist eine reine Boolean-Schnittstelle)
+    // laeuft alles durch DriveTask.applyInput — dieselbe Stelle, die auch der Spieler trifft.
+
+    private static final Area INPUT_CLEAR = new Area(3, -5, 46, -4, 5);
+    private static final Area REVERSE_CLEAR = new Area(3, -46, 8, -4, 5);
+    private static final Area SPEED_CLEAR = new Area(3, -5, 344, -4, 5);
+    private static final Area PLATE_CLEAR = new Area(3, -5, 8, -4, 5);
+
+    private void driverInputs() {
+        Sweep sweep = sweep("driver-input", INPUT_CLEAR);
+
+        // Fussbremse: Verzoegerung = brake-deceleration x Grip. Auf Stein (Grip 0,8) sind das
+        // 0,048 Bloecke/Tick^2 — aus 1 Block/Tick also gut 20 Ticks bis zum Stillstand.
+        sweep.run("bremse", false, 60, 1.0, SimInput.BREMSE, 0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> stopCheck(run, "Fussbremse", config.brakeDeceleration));
+
+        // Handbremse (Sprungtaste): schwaecher als die Fussbremse, dafuer bricht der
+        // Folge-Grip ein. Wirkt auch ohne Fahrpedal.
+        sweep.run("handbremse", false, 90, 1.0, SimInput.HANDBREMSE, 0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> stopCheck(run, "Handbremse", config.handbrakeDeceleration));
+
+        // W und S gleichzeitig bremsen mit voller Bremskraft (kein Patt, kein Vortrieb).
+        sweep.run("gas-und-bremse", false, 60, 1.0, new SimInput(true, true, false, false, false),
+                0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> stopCheck(run, "W+S", config.brakeDeceleration));
+
+        // Motorbremse zum Vergleich: ohne Pedal rollt das Auto weit aus (rollout-stone deckt
+        // die Zahl ab) — hier zaehlt nur, dass sie DEUTLICH schwaecher ist als jede Bremse.
+        sweep.run("ausrollen", false, 40, 1.0, null, 0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> {
+            double kept = lastSample(run).speed() / run.samples().get(0).speed();
+            measurements.put("ausrollen", kept);
+            if (kept < 0.5) {
+                return Result.fail(fmt("ohne Pedal nur %.1f %% Tempo uebrig — die Motorbremse "
+                        + "bremst wie eine Bremse", kept * 100));
+            }
+            return Result.pass(fmt("nach 40 Ticks ohne Pedal noch %.1f %% Tempo", kept * 100));
+        });
+
+        // Rueckwaerts anfahren: S aus dem Stand beschleunigt bis max-reverse-speed und
+        // nicht darueber. Die Strecke liegt HINTER dem Start.
+        sweep.run("rueckwaerts-anfahren", false, 90, 0.0, SimInput.BREMSE, 0f, GROUND_Y - 3.0,
+                REVERSE_CLEAR, lane -> {
+            track(lane, -44, 4, GROUND_Y - 1, Material.STONE);
+            wall(lane, -44, GROUND_Y);
+            wall(lane, 4, GROUND_Y);
+        }, run -> {
+            double max = config.maxReverseSpeed;
+            double fastest = run.samples().stream().mapToDouble(SimSample::speed).max().orElse(0);
+            double last = lastSample(run).speed();
+            double travelled = minZ(run);
+            if (travelled > -3.0) {
+                return Result.fail(fmt("faehrt nicht rueckwaerts an: nur %.3f Bloecke", travelled));
+            }
+            if (fastest > max + 1.0e-6) {
+                return Result.fail(fmt("ueberschreitet max-reverse-speed: %.4f > %.4f", fastest, max));
+            }
+            if (last < max * 0.9) {
+                return Result.fail(fmt("erreicht max-reverse-speed nicht: %.4f von %.4f (%.0f %%)",
+                        last, max, last / max * 100));
+            }
+            return Result.pass(fmt("%.3f Bloecke rueckwaerts, %.4f von %.4f Bl/Tick (%.0f %%)",
+                    travelled, last, max, last / max * 100));
+        });
+
+        // Vollgas aus dem Stand: der weiche Limiter muss sich max-speed naehern, ohne sie
+        // je zu ueberschreiten. Dafuer braucht es eine wirklich lange Gerade.
+        sweep.run("max-speed", false, 200, 0.0, SimInput.GAS, 0f, GROUND_Y - 3.0, SPEED_CLEAR,
+                lane -> {
+            track(lane, -4, 342, GROUND_Y - 1, Material.STONE);
+            wall(lane, 342, GROUND_Y);
+        }, run -> {
+            double max = config.maxSpeed;
+            double fastest = run.samples().stream().mapToDouble(SimSample::speed).max().orElse(0);
+            if (fastest > max + 1.0e-6) {
+                return Result.fail(fmt("ueberschreitet max-speed: %.4f > %.4f Bl/Tick (%.1f km/h)",
+                        fastest, max, fastest * 72));
+            }
+            if (fastest < max * 0.8) {
+                return Result.fail(fmt("kommt nur auf %.1f km/h von %.1f (%.0f %%) — der weiche "
+                        + "Limiter bremst zu frueh", fastest * 72, max * 72, fastest / max * 100));
+            }
+            return Result.pass(fmt("%.1f km/h von %.1f (%.0f %%), nie darueber",
+                    fastest * 72, max * 72, fastest / max * 100));
+        });
+
+        // Lenkung: die Drehrate darf nie ueber dem kleineren der beiden Deckel liegen —
+        // Lenkrad-Anschlag (turn-curvature x Tempo) und Grip-Budget (maxLatGrip x grip / Tempo).
+        // Ohne Gas und mit halbem Tempo: unter Vollgas waechst der Radius mit dem Quadrat der
+        // Geschwindigkeit (Grip-Deckel!), das Auto untersteuert bis in die Bande — und ein
+        // Crash-Spin dreht die Karosse voellig ausserhalb jedes Lenk-Deckels.
+        sweep.run("lenkung", false, 80, 0.5, SimInput.RECHTS, 0f, GROUND_Y - 3.0, PLATE_CLEAR,
+                lane -> plate(lane, 20, -20, 20, 9999, Material.STONE, Material.STONE), run -> {
+            List<SimSample> samples = run.samples();
+            double turned = 0;
+            double fastest = 0;
+            double fastestCap = 0;
+            double violation = 0;
+            double violationCap = 0;
+            double previous = 0;
+            for (int i = 1; i < samples.size(); i++) {
+                SimSample before = samples.get(i - 1);
+                double rate = Math.abs(wrapDeg(samples.get(i).yaw() - before.yaw()));
+                turned += rate;
+                if (rate > fastest) {
+                    fastest = rate;
+                    fastestCap = steerCap(before.speed(), before.grip());
+                }
+                // Die Drehrate folgt dem Bedarf geglaettet (YAW_SMOOTH_*): sie darf ueber dem
+                // aktuellen Deckel liegen, solange sie von einem frueheren, hoeheren Wert
+                // ABKLINGT. Neu aufbauen darf sie sich nur bis zum Deckel.
+                double allowed = Math.max(steerCap(before.speed(), before.grip()), previous);
+                if (rate - allowed > violation - violationCap) {
+                    violation = rate;
+                    violationCap = allowed;
+                }
+                previous = rate;
+            }
+            measurements.put("lenkung-slip", maxSlip(run));
+            measurements.put("lenkung-drehung-10", turnedIn(run, 10));
+            if (run.samples().stream().anyMatch(SimSample::blocked)) {
+                return Result.fail("faehrt in die Bande — der Lenk-Deckel ist so nicht messbar");
+            }
+            if (turned < 90.0) {
+                return Result.fail(fmt("dreht in %d Ticks nur %.1f Grad", samples.size(), turned));
+            }
+            if (violation > violationCap + 0.5) {
+                return Result.fail(fmt("Drehrate %.2f Grad/Tick ueber dem Deckel %.2f",
+                        violation, violationCap));
+            }
+            return Result.pass(fmt("%.0f Grad gedreht, schnellste Rate %.2f von dort erlaubten "
+                    + "%.2f Grad/Tick, kein Tick ueber dem Lenk-/Grip-Deckel",
+                    turned, fastest, fastestCap));
+        });
+
+        // Handbremse beim Lenken: die Lenkung behaelt vollen Grip (Vorderraeder), aber der
+        // Vektor folgt schlechter -> messbar mehr Schlupf als ohne.
+        sweep.run("lenkung-handbremse", false, 80, 0.5, new SimInput(false, false, false, true, true),
+                0f, GROUND_Y - 3.0, PLATE_CLEAR,
+                lane -> plate(lane, 20, -20, 20, 9999, Material.STONE, Material.STONE), run -> {
+            // Verglichen wird nur das erste Stueck: die Handbremse bremst hart, danach sind
+            // die Tempi zu verschieden, um noch etwas ueber den Grip auszusagen.
+            double slip = maxSlip(run);
+            double turned = turnedIn(run, 10);
+            Double slipNormal = measurements.get("lenkung-slip");
+            Double turnedNormal = measurements.get("lenkung-drehung-10");
+            if (slipNormal != null && slip <= slipNormal + 1.0) {
+                return Result.fail(fmt("Handbremse erzeugt keinen zusaetzlichen Schlupf: "
+                        + "%.1f Grad gegen %.1f Grad ohne", slip, slipNormal));
+            }
+            // Einseitig: die Lenkung rechnet mit grip, nicht mit gripEff, also darf die
+            // Handbremse sie nicht schwaechen. Mehr Drehung ist dagegen zu erwarten — die
+            // Handbremse nimmt Tempo, und der Grip-Deckel waechst mit sinkendem Tempo.
+            if (turnedNormal != null && turned < turnedNormal * 0.95) {
+                return Result.fail(fmt("die Lenkung verliert mit Handbremse Grip: %.1f Grad in "
+                        + "10 Ticks gegen %.1f ohne — sie soll vollen Grip behalten (Vorderraeder)",
+                        turned, turnedNormal));
+            }
+            return Result.pass(fmt("Schlupf %.1f Grad statt %.1f, Lenkung mindestens so wirksam "
+                    + "(%.1f gegen %.1f Grad in 10 Ticks)", slip,
+                    slipNormal == null ? -1 : slipNormal, turned,
+                    turnedNormal == null ? -1 : turnedNormal));
+        });
+
+        // Unterhalb turn-min-speed dreht sich gar nichts — sonst koennte man im Stand
+        // auf der Stelle rotieren. Ausnahme ist nur der Rangier-Fall bei Wandkontakt.
+        sweep.run("turn-min-speed", false, 40, 0.0, SimInput.RECHTS, 0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> {
+            float start = run.samples().get(0).yaw();
+            double worst = run.samples().stream()
+                    .mapToDouble(s -> Math.abs(wrapDeg(s.yaw() - start))).max().orElse(0);
+            if (worst > 0.01) {
+                return Result.fail(fmt("dreht im Stand um %.2f Grad, erwartet 0 (turn-min-speed "
+                        + "%.4f Bl/Tick)", worst, config.turnMinSpeed));
+            }
+            return Result.pass("im Stand keine Drehung");
+        });
+
+        sweep.done();
+    }
+
+    /** Flache Steinbahn mit Wand am Ende. */
+    private void flat(Lane lane, int zFrom, int zTo) {
+        track(lane, zFrom, zTo, GROUND_Y - 1, Material.STONE);
+        wall(lane, zTo, GROUND_Y);
+    }
+
+    /** Erlaubte Drehrate eines Ticks: das Kleinere aus Lenkrad-Anschlag und Grip-Budget. */
+    private double steerCap(double speed, double grip) {
+        double gripCap = Math.toDegrees((config.maxLatGrip * grip)
+                / Math.max(speed, DriveTask.SPEED_EPSILON));
+        // Unter turn-min-speed steht das Lenkrad still — ausser beim Rangieren am Hindernis.
+        double wheelCap = speed >= config.turnMinSpeed
+                ? config.turnCurvature * speed
+                : DriveTask.CRAWL_TURN_DEG;
+        return Math.min(wheelCap, gripCap);
+    }
+
+    /** Winkeldifferenz auf −180..180 normiert (yaw springt bei ±180 um). */
+    private static double wrapDeg(double angle) {
+        double a = angle % 360.0;
+        if (a > 180.0) {
+            a -= 360.0;
+        } else if (a < -180.0) {
+            a += 360.0;
+        }
+        return a;
+    }
+
+    /** Summe der Drehbetraege ueber die ersten {@code ticks} Ticks. */
+    private double turnedIn(Run run, int ticks) {
+        List<SimSample> samples = run.samples();
+        double sum = 0;
+        for (int i = 1; i < Math.min(samples.size(), ticks + 1); i++) {
+            sum += Math.abs(wrapDeg(samples.get(i).yaw() - samples.get(i - 1).yaw()));
+        }
+        return sum;
+    }
+
+    private double maxSlip(Run run) {
+        return run.samples().stream().mapToDouble(SimSample::slipDeg).max().orElse(0);
+    }
+
+    /**
+     * Gemeinsame Pruefung aller Bremsvorgaenge: das Auto muss stehen, und zwar nach der
+     * Tick-Zahl, die aus der konfigurierten Verzoegerung x Grip folgt. So faellt auf, wenn
+     * eine Bremse den Grip nicht mehr beruecksichtigt oder die Einheit verrutscht.
+     */
+    private Result stopCheck(Run run, String what, double deceleration) {
+        List<SimSample> samples = run.samples();
+        double start = samples.get(0).speed();
+        double grip = samples.get(0).grip();
+        int stopped = -1;
+        for (int i = 0; i < samples.size(); i++) {
+            if (samples.get(i).speed() < 0.05) {
+                stopped = i;
+                break;
+            }
+        }
+        double expected = start / (deceleration * grip);
+        if (stopped < 0) {
+            return Result.fail(fmt("%s bringt das Auto in %d Ticks nicht zum Stehen (v=%.4f), "
+                    + "erwartet nach rund %.0f Ticks", what, samples.size(),
+                    lastSample(run).speed(), expected));
+        }
+        if (stopped < expected * 0.7 || stopped > expected * 1.4) {
+            return Result.fail(fmt("%s haelt nach %d Ticks, erwartet %.0f (+-30 %%) aus "
+                    + "%.4f Bl/Tick^2 x Grip %.2f", what, stopped, expected, deceleration, grip));
+        }
+        return Result.pass(fmt("%s haelt nach %d Ticks (erwartet rund %.0f)", what, stopped, expected));
     }
 
     // ────────────────────────────── Sweeps ──────────────────────────────
