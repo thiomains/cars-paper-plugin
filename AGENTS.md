@@ -78,6 +78,11 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
      bleiben 3/8, 5/8 und 7/8 je Block stecken, 1/8, 1/4, 1/2 und 3/4 kommen durch. Welche
      Neigung haengt, entscheidet die zufaellige Lage der Oberkanten zu den Zellgrenzen — die
      Liste im Code ist bewusst der IST-Stand.
+- **Aktuell offen (`knownFail`), unabhaengige Wurzel:** `environment/wasser-sinken` — das Auto
+  sinkt mit rund **30 km/h statt der konfigurierten 9** (`max-sink-speed`). `applyGravity`
+  addiert je Tick erst die volle Erdbeschleunigung und daempft danach nur 15 % des Ueberschusses
+  je 0,25-Bloecke-Substep; der Fixpunkt dieser Folge liegt weit ueber dem Sollwert. Der Key
+  wirkt als Richtgroesse, nicht als Grenze — entweder die Daempfung anziehen oder ihn umbenennen.
 - **Kein Bug, sondern Folge der Fahrzeuglaenge:** eine 45-Grad-Treppe (ein Block je Block) ist
   bergauf nicht befahrbar. Auf Stufe N steht die 1,25 Bloecke lange Nase schon ueber Stufe N+1,
   `canStandAt` lehnt ab. Ab einem Block auf zwei geht es (`slope-up`), bergab geht auch 45 Grad.
@@ -86,6 +91,18 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   Anfahren aus dem Stand, Fahrt laengs auf der Kante, ein Farmland-Feld mitten in Stein und
   negative Weltkoordinaten ab. Wer dort erneut ein Steckenbleiben meldet: erst pruefen, ob das
   Ziel nicht doch einen ganzen Block hoeher liegt (dann greift der Punkt darueber).
+- **Umgebung und Grip** decken die Sweeps `environment` und `grip-crash` ab: Wasser (Sinken,
+  Querbremsung), Lava als Wand, freier Fall gegen `max-fall-speed` mit exaktem Aufsetzen,
+  harte Landung, Einrasten auf halber Blockhoehe, Steigungs-Totalstopp und Energiegewinn
+  bergab; dazu die Grip-Tabelle als Funktionspruefung (inklusive: Betonpulver ist KEIN Beton —
+  das haengt allein am Namenssuffix), die Grip-Halbierung mit zwei Raedern ueber der Kante,
+  Schlupfaufbau auf Stein gegen Eis, Standfest-Hartschnapp gegen Ausrollen auf Eis, der
+  Karosserie-Dreh aus einem aussermittigen Wandtreffer, das Herausfahren aus der Geometrie
+  (`embedded`) und Wandkontakt bei vollen 162 km/h ohne Tunneling.
+- **Ein Szenario darf die Physik-Konfiguration umstellen** (`crash-restitution-null` tut das):
+  `startNext()` ruft vor jedem Szenario `config.reload()`, damit sich das nicht fortpflanzt —
+  auch dann nicht, wenn ein Lauf abbricht und die Pruefung nie laeuft. In einem Sweep geht das
+  NICHT: dessen Faelle teilen sich als parallele Gruppe dieselbe Config.
 - Flaechendeckend abgesichert sind ausserdem: **jede erreichbare Stufenhoehe** von 1/16 bis
   1 1/2 Bloecken hinauf (`step-up-heights`) und 1/16 bis 5 Bloecke hinunter
   (`step-down-heights`), **jeder Belagswechsel** als vollstaendige 10x10-Matrix
@@ -103,6 +120,7 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   Produktivstelle statt einer Kopie. Der Sweep `driver-input` deckt Fussbremse, Handbremse,
   W+S, Ausrollen, Rueckwaerts-Anfahren, `max-speed`-Limiter, Lenk-Deckel, `turn-min-speed`
   und den Handbrems-Grip ab. `car.setSimDrive(true)` bleibt als Kurzform fuer Vollgas.
+  `car.setSimDrift(true)` dreht die Karosse stur weiter und provoziert damit Schlupf.
 - Nicht automatisierbar und weiterhin manuell: **Maus**lenkung und Spieler-Prefs (beides braucht
   einen echten Spieler), Actionbar, Modell-Optik (Pitch/Roll-Vorzeichen sind headless
   unsichtbar), Client-Autocomplete, Resourcepack.

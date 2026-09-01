@@ -239,9 +239,16 @@ public final class SelfTest extends BukkitRunnable {
          *  andere Strecken als die kurze Standard-Bahn. */
         Sweep run(String label, boolean knownFail, int ticks, double speed, SimInput input, float yaw,
                   double minY, Area area, Consumer<Lane> build, Function<Run, Result> check) {
+            return run(label, knownFail, ticks, speed, input, yaw, minY, area, null, build, check);
+        }
+
+        /** Vollform mit Nachjustierung direkt nach dem Spawn (Drift, Querbewegung). */
+        Sweep run(String label, boolean knownFail, int ticks, double speed, SimInput input, float yaw,
+                  double minY, Area area, Consumer<Car> tune, Consumer<Lane> build,
+                  Function<Run, Result> check) {
             if (filter == null || name.contains(filter) || label.contains(filter)) {
                 cases.add(new Case(label, knownFail, ticks, speed, input, minY, yaw, false,
-                        area, null, build, check));
+                        area, tune, build, check));
             }
             return this;
         }
@@ -695,9 +702,31 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass("9 Randfaelle korrekt geclamped");
         });
 
+        // 21 — crash-restitution 0 muss den alten harten Stopp ergeben: kein Abpraller.
+        // Die Umstellung passiert im Streckenbau; startNext() setzt vor jedem Szenario zurueck.
+        add("crash-restitution-null", false, 100, 1.5, false, lane -> {
+            config.crashRestitution = 0.0;
+            track(lane, -4, 10, GROUND_Y - 1, Material.STONE);
+            wall(lane, 6, GROUND_Y);
+        }, run -> {
+            double contact = maxZ(run);
+            double rebound = contact - minZAfterMax(run);
+            if (contact < WALL_CONTACT_MIN || contact > WALL_CONTACT_MAX) {
+                return Result.fail(fmt("Wandkontakt z=%.3f, erwartet %.1f..%.1f", contact,
+                        WALL_CONTACT_MIN, WALL_CONTACT_MAX));
+            }
+            if (rebound > 0.05) {
+                return Result.fail(fmt("prallt trotz crash-restitution 0 um %.3f Bloecke ab",
+                        rebound));
+            }
+            return Result.pass(fmt("harter Stopp bei z=%.3f ohne Abpraller (%.3f)", contact, rebound));
+        });
+
         // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel
         // und einen breiten Querschnitt echter Bloecke.
         driverInputs();
+        environment();
+        gripAndCrash();
         stepUpHeights();
         stepUpFromSurfaces();
         stepDownHeights();
@@ -862,6 +891,10 @@ public final class SelfTest extends BukkitRunnable {
             return;
         }
         current = scenarios.get(index);
+        // Ein Szenario darf die Physik-Konfiguration umstellen (z. B. crash-restitution 0).
+        // Vor jedem Szenario zurueck auf die config.yml, damit sich das nicht fortpflanzt —
+        // auch dann, wenn der Lauf vorher abgebrochen ist und die Pruefung nie lief.
+        config.reload();
         pending.clear();
         pending.addAll(current.cases());
         caseNotes.clear();
@@ -1400,6 +1433,12 @@ public final class SelfTest extends BukkitRunnable {
         return sum;
     }
 
+    /** Schlupfwinkel nach genau {@code ticks} Ticks (oder am Ende, wenn der Lauf kuerzer ist). */
+    private double slipAt(Run run, int ticks) {
+        List<SimSample> samples = run.samples();
+        return samples.get(Math.min(ticks, samples.size() - 1)).slipDeg();
+    }
+
     private double maxSlip(Run run) {
         return run.samples().stream().mapToDouble(SimSample::slipDeg).max().orElse(0);
     }
@@ -1431,6 +1470,431 @@ public final class SelfTest extends BukkitRunnable {
                     + "%.4f Bl/Tick^2 x Grip %.2f", what, stopped, expected, deceleration, grip));
         }
         return Result.pass(fmt("%s haelt nach %d Ticks (erwartet rund %.0f)", what, stopped, expected));
+    }
+
+
+    // ────────────────────────────── Umgebung ──────────────────────────────
+    //
+    // Wasser, Lava, freier Fall und Steigungsenergie: alles dokumentiert, bis hierher
+    // von keinem Test beruehrt. Die Erwartungen kommen aus der config.yml (max-sink-speed,
+    // max-fall-speed, slope-resistance), damit eine Einheiten-Verrutschung auffliegt.
+
+    private static final Area BASIN_CLEAR = new Area(3, -5, 26, -14, 6);
+    private static final Area FALL_CLEAR = new Area(3, -5, 38, -52, 6);
+
+    private void environment() {
+        Sweep sweep = sweep("environment", INPUT_CLEAR);
+
+        // Wasser traegt nicht: das Auto sinkt. Der Fall wird dabei gebremst — geprueft wird
+        // gegen max-sink-speed aus der config.yml.
+        // OFFEN (knownFail): die gemessene Endgeschwindigkeit liegt bei rund 30 km/h statt der
+        // konfigurierten 9. applyGravity addiert je Tick erst die volle Erdbeschleunigung und
+        // daempft danach nur 15 % des Ueberschusses je 0,25-Bloecke-Substep. Der Fixpunkt
+        // dieser Folge liegt weit ueber max-sink-speed — der Wert wirkt als Richtgroesse,
+        // nicht als Grenze. Entweder die Daempfung anziehen oder den Key umbenennen.
+        sweep.run("wasser-sinken", true, 80, 1.0, null, 0f, GROUND_Y - 13.0, BASIN_CLEAR, lane -> {
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            basin(lane, 6, 24, 10, Material.WATER);
+        }, run -> {
+            double fastest = fastestSink(run);
+            double lowest = run.samples().stream().mapToDouble(SimSample::y).min().orElse(GROUND_Y);
+            if (lowest > GROUND_Y - 2.0) {
+                return Result.fail(fmt("sinkt nicht ein: tiefster Punkt y=%.3f", lowest));
+            }
+            if (fastest > config.maxSinkSpeed * 1.15) {
+                return Result.fail(fmt("sinkt mit %.4f Bl/Tick (%.1f km/h), erlaubt sind "
+                        + "%.4f (%.1f km/h) aus max-sink-speed", fastest, fastest * 72,
+                        config.maxSinkSpeed, config.maxSinkSpeed * 72));
+            }
+            return Result.pass(fmt("sinkt mit hoechstens %.1f km/h auf y=%.3f", fastest * 72, lowest));
+        });
+
+        // Wasser bremst die Querbewegung stark (WATER_DRAG, 10 % je Tick).
+        sweep.run("wasser-bremst", false, 60, 1.5, null, 0f, GROUND_Y - 13.0, BASIN_CLEAR, lane -> {
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            basin(lane, 6, 24, 10, Material.WATER);
+        }, run -> {
+            List<SimSample> samples = run.samples();
+            double before = 0;
+            double after = 0;
+            for (int i = 1; i < samples.size(); i++) {
+                if (samples.get(i).y() < GROUND_Y - 1.0 && before == 0) {
+                    before = samples.get(i - 1).speed();
+                    after = samples.get(Math.min(samples.size() - 1, i + 5)).speed();
+                }
+            }
+            if (before == 0) {
+                return Result.fail("kommt gar nicht ins Wasser");
+            }
+            double kept = after / before;
+            if (kept > 0.75) {
+                return Result.fail(fmt("Wasser bremst kaum: nach 5 Ticks noch %.1f %% Tempo "
+                        + "(erwartet hoechstens 75 %% bei 10 %% je Tick)", kept * 100));
+            }
+            return Result.pass(fmt("Tempo von %.3f auf %.3f in 5 Ticks Wasser (%.0f %%)",
+                    before, after, kept * 100));
+        });
+
+        // Lava ist eine Wand (columnObstacleTop liefert +unendlich), kein Bad.
+        sweep.run("lava-wand", false, 60, 1.0, SimInput.GAS, 0f, GROUND_Y - 3.0, BASIN_CLEAR, lane -> {
+            track(lane, -4, 24, GROUND_Y - 1, Material.STONE);
+            for (int z = 6; z <= 10; z++) {
+                floorAt(lane, z, GROUND_Y, Material.LAVA);
+            }
+            wall(lane, 24, GROUND_Y);
+        }, run -> {
+            double reached = maxZ(run);
+            if (reached > 5.5) {
+                return Result.fail(fmt("faehrt in die Lava: z=%.3f", reached));
+            }
+            return Result.pass(fmt("blockiert vor der Lava bei z=%.3f", reached));
+        });
+
+        // Freier Fall: der Deckel max-fall-speed muss halten und die Landung auf der echten
+        // Blockoberkante einrasten.
+        // Langsam anfahren: waehrend der 34 Ticks Fall traegt der Restschwung das Auto sonst
+        // ueber das Auffangpodest hinaus, und der Lauf misst nur noch den Flug in die Leere.
+        sweep.run("freier-fall", false, 90, 0.3, null, 0f, GROUND_Y - 48.0, FALL_CLEAR, lane -> {
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            track(lane, 6, 34, GROUND_Y - 45, Material.STONE);
+            wall(lane, 34, GROUND_Y - 44);
+        }, run -> {
+            double fastest = fastestSink(run);
+            SimSample last = lastSample(run);
+            if (fastest > config.maxFallSpeed + 1.0e-6) {
+                return Result.fail(fmt("faellt mit %.4f Bl/Tick (%.1f km/h) ueber max-fall-speed "
+                        + "%.4f (%.1f km/h)", fastest, fastest * 72, config.maxFallSpeed,
+                        config.maxFallSpeed * 72));
+            }
+            if (fastest < config.maxFallSpeed * 0.9) {
+                return Result.fail(fmt("erreicht den Deckel gar nicht: %.4f von %.4f — die "
+                        + "Fallhoehe im Szenario reicht nicht", fastest, config.maxFallSpeed));
+            }
+            if (!last.grounded() || Math.abs(last.y() - (GROUND_Y - 44)) > 0.01) {
+                return Result.fail(fmt("landet bei y=%.4f statt %d, grounded=%s", last.y(),
+                        GROUND_Y - 44, last.grounded()));
+            }
+            return Result.pass(fmt("faellt mit hoechstens %.1f km/h (Deckel %.1f), landet exakt "
+                    + "auf y=%.1f", fastest * 72, config.maxFallSpeed * 72, last.y()));
+        });
+
+        // Harte Landung: nach einem echten Fall bricht der Querschwung auf 70 % ein.
+        sweep.run("harte-landung", false, 60, 1.2, null, 0f, GROUND_Y - 12.0, BASIN_CLEAR, lane -> {
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            track(lane, 6, 24, GROUND_Y - 9, Material.STONE);
+            wall(lane, 24, GROUND_Y - 8);
+        }, run -> {
+            List<SimSample> samples = run.samples();
+            int landing = -1;
+            for (int i = 1; i < samples.size(); i++) {
+                if (!samples.get(i - 1).grounded() && samples.get(i).grounded()) {
+                    landing = i;
+                    break;
+                }
+            }
+            if (landing < 0) {
+                return Result.fail("es gibt gar keinen Fall mit Landung");
+            }
+            // SimSample.speed ist das Tempo zu TICK-BEGINN: die Daempfung des Aufsetz-Ticks
+            // steht erst im naechsten Sample.
+            if (landing + 1 >= samples.size()) {
+                return Result.fail("landet erst im letzten Tick, die Daempfung ist nicht messbar");
+            }
+            double before = samples.get(landing).speed();
+            double after = samples.get(landing + 1).speed();
+            double kept = after / before;
+            if (kept > 0.95) {
+                return Result.fail(fmt("harte Landung daempft nicht: %.3f -> %.3f (%.0f %%)",
+                        before, after, kept * 100));
+            }
+            return Result.pass(fmt("Aufsetzen daempft %.3f -> %.3f (%.0f %%)", before, after,
+                    kept * 100));
+        });
+
+        // Landung auf einer Stufe muss auf die halbe Blockhoehe einrasten, nicht auf den
+        // ganzen Block darunter.
+        sweep.run("landung-auf-stufe", false, 60, 1.0, null, 0f, GROUND_Y - 12.0, BASIN_CLEAR,
+                lane -> {
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            track(lane, 6, 24, GROUND_Y - 6, Material.STONE);
+            track(lane, 6, 24, GROUND_Y - 5, Material.STONE_SLAB);
+            wall(lane, 24, GROUND_Y - 4);
+        }, run -> {
+            SimSample last = lastSample(run);
+            double expected = GROUND_Y - 4.5;
+            if (!last.grounded() || Math.abs(last.y() - expected) > 0.01) {
+                return Result.fail(fmt("landet bei y=%.4f statt auf der Stufenoberkante %.4f",
+                        last.y(), expected));
+            }
+            return Result.pass(fmt("rastet exakt auf der Stufenoberkante y=%.4f ein", last.y()));
+        });
+
+        // Steigungsenergie: mit zu wenig Schwung bleibt das Auto am Berg stehen (v^2 geht auf
+        // null). Ohne Gas, damit wirklich die Energie entscheidet.
+        sweep.run("steigung-totalstopp", false, 60, 0.35, null, 0f, GROUND_Y - 3.0, SLOPE_CLEAR,
+                lane -> {
+            for (int z = -4; z < SEAM; z++) {
+                floorAt(lane, z, GROUND_Y - 1, Material.STONE);
+            }
+            for (int z = SEAM; z <= SEAM + 20; z++) {
+                fillTo(lane, z, GROUND_Y + Math.min(6, (z - SEAM) / 2 + 1));
+            }
+        }, run -> {
+            SimSample last = lastSample(run);
+            double reached = maxZ(run);
+            if (last.speed() > 1.0e-9) {
+                return Result.fail(fmt("rollt am Berg weiter: v=%.5f bei z=%.3f y=%.3f",
+                        last.speed(), reached, last.y()));
+            }
+            if (reached < SEAM || last.y() <= GROUND_Y) {
+                return Result.fail(fmt("bleibt schon vor der Steigung stehen: z=%.3f y=%.3f",
+                        reached, last.y()));
+            }
+            return Result.pass(fmt("bleibt am Berg stehen: z=%.3f y=%.3f", reached, last.y()));
+        });
+
+        // Gegenprobe: bergab wird die Energie zurueckgegeben, das Auto wird schneller.
+        sweep.run("gefaelle-gewinnt", false, 60, 0.3, null, 0f, GROUND_Y - 12.0, SLOPE_CLEAR,
+                lane -> {
+            for (int z = -4; z < SEAM; z++) {
+                floorAt(lane, z, GROUND_Y - 1, Material.STONE);
+            }
+            for (int z = SEAM; z <= SEAM + 20; z++) {
+                fillTo(lane, z, GROUND_Y - Math.min(8, (z - SEAM) / 2 + 1));
+            }
+            wall(lane, SEAM + 20, GROUND_Y - 8);
+        }, run -> {
+            double start = run.samples().get(0).speed();
+            double fastest = run.samples().stream().mapToDouble(SimSample::speed).max().orElse(0);
+            if (fastest <= start * 1.5) {
+                return Result.fail(fmt("bergab kaum schneller: %.3f -> %.3f", start, fastest));
+            }
+            return Result.pass(fmt("bergab von %.3f auf %.3f Bl/Tick", start, fastest));
+        });
+
+        sweep.done();
+    }
+
+    /** Groesste Sinkgeschwindigkeit eines Ticks (Bloecke pro Tick, positiv). */
+    private double fastestSink(Run run) {
+        List<SimSample> samples = run.samples();
+        double fastest = 0;
+        for (int i = 1; i < samples.size(); i++) {
+            fastest = Math.max(fastest, samples.get(i - 1).y() - samples.get(i).y());
+        }
+        return fastest;
+    }
+
+    /** Steinwanne mit Fluessigkeit: Boden, Seitenwaende bei x=+-3 und Fuellung bis GROUND_Y-1. */
+    private void basin(Lane lane, int zFrom, int zTo, int depth, Material fluid) {
+        for (int z = zFrom; z <= zTo; z++) {
+            floorAt(lane, z, GROUND_Y - 1 - depth, Material.STONE);
+            for (int y = GROUND_Y - depth; y <= GROUND_Y - 1; y++) {
+                lane.world().getBlockAt(lane.baseX() - 3, y, lane.baseZ() + z)
+                        .setType(Material.STONE, false);
+                lane.world().getBlockAt(lane.baseX() + 3, y, lane.baseZ() + z)
+                        .setType(Material.STONE, false);
+                floorAt(lane, z, y, fluid);
+            }
+        }
+        for (int y = GROUND_Y - depth; y <= GROUND_Y - 1; y++) {
+            for (int x = lane.baseX() - 3; x <= lane.baseX() + 3; x++) {
+                lane.world().getBlockAt(x, y, lane.baseZ() + zTo + 1).setType(Material.STONE, false);
+            }
+        }
+    }
+
+
+    // ────────────────────────────── Grip und Crash ──────────────────────────────
+
+    private static final Area PLATE20_CLEAR = new Area(3, -5, 8, -4, 5);
+
+    private void gripAndCrash() {
+        Sweep sweep = sweep("grip-crash", INPUT_CLEAR);
+
+        // Die Grip-Tabelle als reine Funktionspruefung. Beton greift ueber den NAMEN
+        // (endsWith CONCRETE) — dass Betonpulver dabei NICHT mitzaehlt, haengt an genau
+        // diesem Suffix und ist sonst nirgends abgesichert.
+        sweep.run("grip-tabelle", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            GripCalculator grip = new GripCalculator(config);
+            List<String> errors = new ArrayList<>();
+            gripIs(errors, grip, Material.WHITE_CONCRETE, config.gripConcrete);
+            gripIs(errors, grip, Material.BLACK_CONCRETE, config.gripConcrete);
+            gripIs(errors, grip, Material.WHITE_CONCRETE_POWDER, config.gripDefault);
+            gripIs(errors, grip, Material.GRASS_BLOCK, config.gripGrass);
+            gripIs(errors, grip, Material.DIRT, config.gripGrass);
+            gripIs(errors, grip, Material.COARSE_DIRT, config.gripGrass);
+            gripIs(errors, grip, Material.ROOTED_DIRT, config.gripGrass);
+            gripIs(errors, grip, Material.PODZOL, config.gripGrass);
+            gripIs(errors, grip, Material.MYCELIUM, config.gripGrass);
+            gripIs(errors, grip, Material.DIRT_PATH, config.gripGrass);
+            gripIs(errors, grip, Material.FARMLAND, config.gripGrass);
+            gripIs(errors, grip, Material.MUD, config.gripGrass);
+            gripIs(errors, grip, Material.SNOW, config.gripGrass);
+            gripIs(errors, grip, Material.SNOW_BLOCK, config.gripGrass);
+            gripIs(errors, grip, Material.ICE, config.gripIce);
+            gripIs(errors, grip, Material.PACKED_ICE, config.gripIce);
+            gripIs(errors, grip, Material.BLUE_ICE, config.gripIce);
+            gripIs(errors, grip, Material.FROSTED_ICE, config.gripIce);
+            gripIs(errors, grip, Material.STONE, config.gripDefault);
+            gripIs(errors, grip, Material.OAK_PLANKS, config.gripDefault);
+            gripIs(errors, grip, Material.IRON_BLOCK, config.gripDefault);
+            gripIs(errors, grip, Material.SOUL_SAND, config.gripDefault);
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("22 Materialien korrekt eingestuft (inkl. Betonpulver != Beton)");
+        });
+
+        // Haengt die halbe Karosse ueber der Kante, tragen nur zwei Raeder — der wirksame
+        // Grip halbiert sich. Das ist der eigentliche Zweck der vier Rad-Samples.
+        sweep.run("halber-grip-kante", false, 40, 0.8, null, 0f, GROUND_Y - 3.0, lane -> {
+            for (int z = -4; z <= 30; z++) {
+                for (int x = lane.baseX() - 2; x <= lane.baseX(); x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+                // Rechts liegt der Boden so tief, dass die Federungstoleranz (1,05) reisst
+                for (int x = lane.baseX() + 1; x <= lane.baseX() + 2; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 4, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+            }
+            wall(lane, 30, GROUND_Y);
+        }, run -> {
+            double full = config.gripDefault;
+            double half = full / 2.0;
+            List<SimSample> grounded = run.samples().stream().filter(SimSample::grounded).toList();
+            if (grounded.size() < 10) {
+                return Result.fail("verliert den Boden ganz — die Bahn ist falsch gebaut");
+            }
+            double worst = grounded.stream().mapToDouble(s -> Math.abs(s.grip() - half)).max().orElse(9);
+            if (worst > 0.02) {
+                return Result.fail(fmt("Grip an der Kante %.3f statt %.3f (halber Wert von %.3f)",
+                        grounded.get(grounded.size() - 1).grip(), half, full));
+            }
+            return Result.pass(fmt("zwei von vier Raedern tragen: Grip %.3f statt %.3f", half, full));
+        });
+
+        // Schlupf: bei erzwungener Drehung (simDrift, 6 Grad je Tick) folgt der Vektor auf
+        // Stein spuerbar mit, auf Eis kaum. Verglichen wird der Aufbau in den ersten Ticks —
+        // laesst man es laufen, saettigt der Winkel auf beiden Belaegen bei ueber 90 Grad
+        // und der Unterschied verschwindet.
+        sweep.run("schlupf-stein", false, 60, 1.0, null, 0f, GROUND_Y - 3.0, PLATE20_CLEAR,
+                car -> car.setSimDrift(true),
+                lane -> plate(lane, 20, -20, 20, 9999, Material.STONE, Material.STONE), run -> {
+            double early = slipAt(run, 10);
+            measurements.put("schlupf-stein", early);
+            return Result.pass(fmt("Schlupf auf Stein nach 10 Ticks %.1f Grad (Maximum %.1f)",
+                    early, maxSlip(run)));
+        });
+
+        sweep.run("schlupf-eis", false, 60, 1.0, null, 0f, GROUND_Y - 3.0, PLATE20_CLEAR,
+                car -> car.setSimDrift(true),
+                lane -> plate(lane, 20, -20, 20, 9999, Material.PACKED_ICE, Material.PACKED_ICE),
+                run -> {
+            double early = slipAt(run, 10);
+            Double stone = measurements.get("schlupf-stein");
+            if (stone != null && early < stone * 1.15) {
+                return Result.fail(fmt("auf Eis nur %.1f Grad Schlupf nach 10 Ticks gegen %.1f "
+                        + "auf Stein — der Grip macht keinen Unterschied", early, stone));
+            }
+            return Result.pass(fmt("Schlupf nach 10 Ticks: Eis %.1f Grad, Stein %.1f Grad", early,
+                    stone == null ? -1 : stone));
+        });
+
+        // Standfest: unter der Kriechgrenze rastet das Auto hart ein — aber nur, wenn die
+        // Reifen tragen. Auf Eis (Grip unter 0,4) rollt der Restschwung aus.
+        sweep.run("standfest-stein", false, 30, 0.02, null, 0f, GROUND_Y - 3.0, lane -> {
+            flat(lane, -4, 44);
+        }, run -> {
+            double last = lastSample(run).speed();
+            if (last != 0.0) {
+                return Result.fail(fmt("rollt weiter statt hart zu stehen: v=%.6f", last));
+            }
+            return Result.pass("steht exakt still");
+        });
+
+        sweep.run("standfest-eis", false, 30, 0.02, null, 0f, GROUND_Y - 3.0, lane -> {
+            track(lane, -4, 44, GROUND_Y - 1, Material.PACKED_ICE);
+            wall(lane, 44, GROUND_Y);
+        }, run -> {
+            double last = lastSample(run).speed();
+            if (last <= 0.0) {
+                return Result.fail("rastet auf Eis hart ein — dort soll der Schwung auslaufen");
+            }
+            return Result.pass(fmt("rollt auf Eis weiter aus (v=%.5f)", last));
+        });
+
+        // Aussermittiger Wandtreffer dreht die Karosse ueber den Aufprall-Hebel.
+        sweep.run("wand-spin", false, 60, 1.2, null, 0f, GROUND_Y - 3.0, lane -> {
+            track(lane, -4, 20, GROUND_Y - 1, Material.STONE);
+            for (int x = lane.baseX() + 1; x <= lane.baseX() + 3; x++) {
+                for (int y = GROUND_Y; y <= GROUND_Y + 3; y++) {
+                    lane.world().getBlockAt(x, y, lane.baseZ() + 8).setType(Material.STONE, false);
+                }
+            }
+            wall(lane, 20, GROUND_Y);
+        }, run -> {
+            float start = run.samples().get(0).yaw();
+            double turned = run.samples().stream()
+                    .mapToDouble(s -> Math.abs(wrapDeg(s.yaw() - start))).max().orElse(0);
+            if (turned < 3.0) {
+                return Result.fail(fmt("aussermittiger Treffer dreht die Karosse nicht: %.2f Grad",
+                        turned));
+            }
+            return Result.pass(fmt("Aufprall-Hebel dreht um %.1f Grad", turned));
+        });
+
+        // In der Geometrie steckend (Fremdeingriff, Alt-Faelle) muss man herausfahren koennen:
+        // die Kollision setzt dann bewusst aus.
+        sweep.run("eingebettet-ausweg", false, 60, 0.0, SimInput.GAS, 0f, GROUND_Y - 3.0, lane -> {
+            track(lane, -4, 30, GROUND_Y - 1, Material.STONE);
+            track(lane, -2, 0, GROUND_Y, Material.STONE);
+            wall(lane, 30, GROUND_Y);
+        }, run -> {
+            double reached = maxZ(run);
+            if (reached < 5.0) {
+                return Result.fail(fmt("kommt aus dem Block nicht heraus: z=%.3f (v=%.3f)",
+                        reached, lastSample(run).speed()));
+            }
+            return Result.pass(fmt("faehrt aus der Geometrie heraus, z=%.3f", reached));
+        });
+
+        // Hoechstgeschwindigkeit gegen die Wand: die Substep-Abtastung (0,4 Bloecke) muss
+        // auch bei 2,25 Bloecken pro Tick greifen.
+        sweep.run("tunneling-vollgas", false, 60, config.maxSpeed, SimInput.GAS, 0f,
+                GROUND_Y - 3.0, INPUT_CLEAR, lane -> {
+            track(lane, -4, 30, GROUND_Y - 1, Material.STONE);
+            wall(lane, 30, GROUND_Y);
+        }, run -> {
+            double reached = maxZ(run);
+            double limit = 30 - LONG_HALF + 0.45;
+            if (reached > limit) {
+                return Result.fail(fmt("Tunneling bei %.1f km/h: z=%.3f, die Nase steht damit "
+                        + "%.3f Bloecke in der Wand", config.maxSpeed * 72, reached,
+                        reached + LONG_HALF - 30));
+            }
+            if (reached < 20) {
+                return Result.fail(fmt("erreicht die Wand gar nicht: z=%.3f", reached));
+            }
+            return Result.pass(fmt("Kontakt bei z=%.3f mit %.1f km/h, kein Tunneling",
+                    reached, config.maxSpeed * 72));
+        });
+
+        sweep.done();
+    }
+
+    /** Halbe Fahrzeuglaenge — die Nase steht so weit vor der Fahrzeugmitte. */
+    private static final double LONG_HALF = 1.25;
+
+    private void gripIs(List<String> errors, GripCalculator calculator, Material material,
+                        double expected) {
+        double actual = calculator.gripFor(material);
+        if (Math.abs(actual - expected) > 1.0e-9) {
+            errors.add(fmt("%s: %.2f statt %.2f", material.name(), actual, expected));
+        }
     }
 
     // ────────────────────────────── Sweeps ──────────────────────────────
