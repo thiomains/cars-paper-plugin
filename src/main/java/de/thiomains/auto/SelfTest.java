@@ -1,6 +1,7 @@
 package de.thiomains.auto;
 
 import org.bukkit.Bukkit;
+import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -38,6 +39,10 @@ public final class SelfTest extends BukkitRunnable {
     private static final int LANE_SPACING = 60;
     private static final int GROUND_Y = 60;
     private static final int TIMEOUT_MARGIN = 40;
+    /** Gleichzeitig fahrende Faelle eines Sweeps. Die Baehnen liegen LANE_SPACING auseinander,
+     *  weit jenseits des Auto-Auto-Kollisionsradius — die Autos sehen einander nicht. */
+    private static final int BATCH = 12;
+    private static final int SWEEP_TICKS = 50;
 
     // ---- Erwartungswerte (menschenlesbar in Blöcken, relativ zum Bahn-Ursprung) ----
     private static final double WALL_CONTACT_MIN = 4.4;
@@ -57,15 +62,37 @@ public final class SelfTest extends BukkitRunnable {
     private final String filter;
 
     private final List<Scenario> scenarios = new ArrayList<>();
-    private final List<SimSample> samples = new ArrayList<>();
     private final List<Car> extraCars = new ArrayList<>();
     private final Map<String, Double> measurements = new LinkedHashMap<>();
 
+    /** Ein laufender Fall mit seiner Bahn, seinem Auto und seinen Tick-Werten. */
+    private static final class Active {
+        private final Case spec;
+        private final Lane lane;
+        private final List<SimSample> samples = new ArrayList<>();
+        private Car car;
+
+        private Active(Case spec, Lane lane) {
+            this.spec = spec;
+            this.lane = lane;
+        }
+    }
+
+    private final List<Active> active = new ArrayList<>();
+    private final List<long[]> tickets = new ArrayList<>();
+    private final List<Case> pending = new ArrayList<>();
+    private final List<String> caseNotes = new ArrayList<>();
+
     private int index = -1;
     private Scenario current;
-    private Lane lane;
-    private Car car;
+    private int laneCounter;
     private int waited;
+    private int caseOk;
+    private int caseBad;
+    private int caseKnown;
+    private int caseTotal;
+    private int totalCases;
+    private String lastDetail = "";
     private long startedAt;
     private int passed;
     private int failed;
@@ -87,6 +114,12 @@ public final class SelfTest extends BukkitRunnable {
         }
         running = true;
         startedAt = System.currentTimeMillis();
+        // Die Baehnen werden per Chunk-Ticket geladen gehalten — geladene Chunks ticken aber
+        // auch: Ackerland trocknet zu Dirt aus, Schnee schmilzt, Kaktus waechst. Das aendert
+        // die Strecke waehrend der Messung und macht Laeufe unreproduzierbar.
+        World world = Bukkit.getWorlds().get(0);
+        world.setGameRule(GameRule.RANDOM_TICK_SPEED, 0);
+        world.setGameRule(GameRule.DO_FIRE_TICK, false);
         log("START " + scenarios.size() + " Szenarien"
                 + (filter != null ? " (Filter: " + filter + ")" : ""));
         runTaskTimer(plugin, 1L, 1L);
@@ -111,10 +144,31 @@ public final class SelfTest extends BukkitRunnable {
         }
     }
 
-    /** ticks = 0 bedeutet: kein Fahrszenario, die Prüfung läuft sofort. */
-    private record Scenario(String name, boolean knownFail, int ticks, double startSpeed, boolean drive,
-                            double minY, float yaw, boolean negativeLane, Consumer<Car> tune,
-                            Consumer<Lane> build, Function<Run, Result> check) {
+    /** Ein einzelner Fahrfall: eigene Bahn, eigenes Auto, eigene Pruefung.
+     *  ticks = 0 bedeutet: kein Fahrszenario, die Pruefung laeuft sofort.
+     *  Ein normales Szenario besteht aus genau einem Fall, ein Sweep aus vielen. */
+    private record Case(String label, boolean knownFail, int ticks, double startSpeed, boolean drive,
+                        double minY, float yaw, boolean negativeLane, Area clear, Consumer<Car> tune,
+                        Consumer<Lane> build, Function<Run, Result> check) {
+    }
+
+    /** Freizuraeumender Bereich einer Bahn: x relativ zur Bahnmitte, z zum Bahnursprung,
+     *  y zu GROUND_Y. Sweeps raeumen deutlich weniger als die langen Einzelstrecken —
+     *  bei ueber 200 Baehnen faellt jeder ueberfluessige setType ins Gewicht. */
+    private record Area(int halfWidth, int zFrom, int zTo, int yFrom, int yTo) {
+    }
+
+    private static final Area FULL_CLEAR = new Area(3, -5, 50, -26, 8);
+    private static final Area SWEEP_CLEAR = new Area(3, -5, 22, -6, 6);
+    private static final Area SLOPE_CLEAR = new Area(3, -5, 34, -22, 6);
+
+    private record Scenario(String name, boolean knownFail, List<Case> cases) {
+    }
+
+    private void addCase(String name, boolean knownFail, Case single) {
+        if (filter == null || name.contains(filter)) {
+            scenarios.add(new Scenario(name, knownFail, List.of(single)));
+        }
     }
 
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
@@ -125,29 +179,68 @@ public final class SelfTest extends BukkitRunnable {
     /** Variante mit Nachjustierung direkt nach dem Spawn (Drift, Querbewegung). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive, float yaw,
                      Consumer<Car> tune, Consumer<Lane> build, Function<Run, Result> check) {
-        if (filter == null || name.contains(filter)) {
-            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
-                    false, tune, build, check));
-        }
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+                false, FULL_CLEAR, tune, build, check));
     }
 
     /** Variante mit Blickrichtung und optional negativen Weltkoordinaten (Rundungs-Verhalten von floor). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
                      float yaw, boolean negativeLane, Consumer<Lane> build, Function<Run, Result> check) {
-        if (filter == null || name.contains(filter)) {
-            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
-                    negativeLane, null, build, check));
-        }
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, GROUND_Y - 3.0, yaw,
+                negativeLane, FULL_CLEAR, null, build, check));
     }
 
     /** minY ist die Absturz-Sicherung: faellt das Auto tiefer, hat es die Bahn verlassen und
      *  jede weitere Auswertung waere Unsinn (die Flachwelt liegt 120 Bloecke tiefer). */
     private void add(String name, boolean knownFail, int ticks, double speed, boolean drive,
                      double minY, Consumer<Lane> build, Function<Run, Result> check) {
-        if (filter == null || name.contains(filter)) {
-            scenarios.add(new Scenario(name, knownFail, ticks, speed, drive, minY, 0f, false, null,
-                    build, check));
+        addCase(name, knownFail, new Case("", knownFail, ticks, speed, drive, minY, 0f, false,
+                FULL_CLEAR, null, build, check));
+    }
+
+    /**
+     * Sammelt viele kurze Faelle unter einem Namen. Die Faelle laufen in Gruppen von
+     * {@link #BATCH} gleichzeitig auf eigenen Baehnen — anders waere eine Matrix ueber
+     * alle Stufenhoehen und Belaege nicht in vertretbarer Zeit zu fahren.
+     */
+    private final class Sweep {
+
+        private final String name;
+        private final Area clear;
+        private final List<Case> cases = new ArrayList<>();
+
+        private Sweep(String name, Area clear) {
+            this.name = name;
+            this.clear = clear;
         }
+
+        Sweep run(String label, boolean knownFail, double speed, boolean drive, double minY,
+                  Consumer<Lane> build, Function<Run, Result> check) {
+            if (filter == null || name.contains(filter) || label.contains(filter)) {
+                cases.add(new Case(label, knownFail, SWEEP_TICKS, speed, drive, minY, 0f, false,
+                        clear, null, build, check));
+            }
+            return this;
+        }
+
+        Sweep run(String label, boolean knownFail, double speed, boolean drive,
+                  Consumer<Lane> build, Function<Run, Result> check) {
+            return run(label, knownFail, speed, drive, GROUND_Y - 3.0, build, check);
+        }
+
+        void done() {
+            if (!cases.isEmpty()) {
+                scenarios.add(new Scenario(name, false, List.copyOf(cases)));
+            }
+        }
+    }
+
+    private Sweep sweep(String name) {
+        return new Sweep(name, SWEEP_CLEAR);
+    }
+
+    private Sweep sweep(String name, Area clear) {
+        return new Sweep(name, clear);
     }
 
     private void defineScenarios() {
@@ -583,6 +676,15 @@ public final class SelfTest extends BukkitRunnable {
             }
             return Result.pass("9 Randfaelle korrekt geclamped");
         });
+
+        // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel
+        // und einen breiten Querschnitt echter Bloecke.
+        stepUpHeights();
+        stepUpFromSurfaces();
+        stepDownHeights();
+        slopes();
+        surfaceTransitions();
+        driveOverObstacles();
     }
 
     /** Farmland-Kante quer zur Fahrt auf breiter Platte — variiert Winkel, Tempo und Koordinaten. */
@@ -647,21 +749,91 @@ public final class SelfTest extends BukkitRunnable {
             return;
         }
         waited++;
-        boolean done = car == null || car.getSimTicks() <= 0 || carManager.getCarByBase(car.getBase().getUniqueId()) == null;
-        if (!done && waited < current.ticks() + TIMEOUT_MARGIN) {
+        int budget = 0;
+        boolean allDone = true;
+        for (Active a : active) {
+            budget = Math.max(budget, a.spec.ticks());
+            if (!isDone(a)) {
+                allDone = false;
+            }
+        }
+        if (!allDone && waited < budget + TIMEOUT_MARGIN) {
             return;
         }
-        Run run = new Run(lane, List.copyOf(samples));
-        double lowest = samples.stream().mapToDouble(SimSample::y).min().orElse(current.minY());
+        for (Active a : active) {
+            evaluate(a, isDone(a));
+        }
+        cleanup();
+        if (!pending.isEmpty()) {
+            startBatch();
+            return;
+        }
+        reportScenario();
+        current = null;
+    }
+
+    private boolean isDone(Active a) {
+        return a.car == null || a.car.getSimTicks() <= 0
+                || carManager.getCarByBase(a.car.getBase().getUniqueId()) == null;
+    }
+
+    /** Wertet einen gefahrenen Fall aus und schreibt ihn in die Zaehler des Szenarios. */
+    private void evaluate(Active a, boolean done) {
+        if (a.spec.ticks() == 0) {
+            recordCase(a, a.spec.check().apply(new Run(a.lane, List.of())));
+            return;
+        }
+        Run run = new Run(a.lane, List.copyOf(a.samples));
+        double lowest = a.samples.stream().mapToDouble(SimSample::y).min().orElse(a.spec.minY());
         Result result;
         if (!done) {
             result = Result.fail("Timeout nach " + waited + " Ticks");
-        } else if (lowest < current.minY()) {
-            result = Result.fail(fmt("aus der Bahn gefallen (y=%.3f, Untergrenze %.3f)", lowest, current.minY()));
+        } else if (lowest < a.spec.minY()) {
+            result = Result.fail(fmt("aus der Bahn gefallen (y=%.3f, Untergrenze %.3f)", lowest, a.spec.minY()));
+        } else if (a.samples.isEmpty()) {
+            result = Result.fail("kein einziger Tick aufgezeichnet (Chunk nicht geladen?)");
         } else {
-            result = current.check().apply(run);
+            result = a.spec.check().apply(run);
         }
-        finishScenario(result);
+        recordCase(a, result);
+    }
+
+    private void recordCase(Active a, Result result) {
+        caseTotal++;
+        totalCases++;
+        String label = a.spec.label();
+        boolean sweepCase = !label.isEmpty();
+        lastDetail = result.detail();
+        if (result.ok() && !a.spec.knownFail()) {
+            caseOk++;
+            if (verbose && sweepCase) {
+                log("  ok   " + label + " — " + result.detail());
+            }
+        } else if (result.ok()) {
+            caseBad++;
+            lastDetail = result.detail() + " — knownFail-Flag entfernen, der Bug ist gefixt";
+            if (sweepCase) {
+                caseNotes.add("UNEXPECTED-PASS " + label + ": " + lastDetail);
+            }
+        } else if (a.spec.knownFail()) {
+            caseKnown++;
+            if (sweepCase) {
+                caseNotes.add("KNOWN-FAIL " + label + ": " + result.detail());
+            }
+        } else {
+            caseBad++;
+            if (sweepCase) {
+                caseNotes.add(label + ": " + result.detail());
+            }
+            for (SimSample sample : trace(a)) {
+                caseNotes.add((sweepCase ? "    " : "  ") + sample.describe());
+            }
+        }
+        if (verbose && !a.samples.isEmpty()) {
+            for (SimSample sample : a.samples) {
+                log("  " + (label.isEmpty() ? "" : label + " ") + sample.describe());
+            }
+        }
     }
 
     private void startNext() {
@@ -671,80 +843,121 @@ public final class SelfTest extends BukkitRunnable {
             return;
         }
         current = scenarios.get(index);
-        samples.clear();
-        waited = 0;
-        World world = Bukkit.getWorlds().get(0);
-        lane = current.negativeLane()
-                ? new Lane(world, -600 - index * LANE_SPACING, -600, GROUND_Y)
-                : new Lane(world, 200 + index * LANE_SPACING, 200, GROUND_Y);
-        clearLane(lane);
-        current.build().accept(lane);
-        if (current.ticks() == 0) {
-            car = null;
-            finishScenario(current.check().apply(new Run(lane, List.of())));
-            return;
-        }
-        car = carManager.spawnCar(new Location(world, lane.baseX() + 0.5, lane.groundY(),
-                lane.baseZ() + 0.5, current.yaw(), 0f), current.yaw());
-        double rad = Math.toRadians(current.yaw());
-        car.setVelX(-Math.sin(rad) * current.startSpeed());
-        car.setVelZ(Math.cos(rad) * current.startSpeed());
-        car.setSimDrive(current.drive());
-        if (current.tune() != null) {
-            current.tune().accept(car);
-        }
-        car.setSimObserver(samples::add);
-        car.setSimTicks(current.ticks());
+        pending.clear();
+        pending.addAll(current.cases());
+        caseNotes.clear();
+        caseOk = 0;
+        caseBad = 0;
+        caseKnown = 0;
+        caseTotal = 0;
+        startBatch();
     }
 
-    private void finishScenario(Result result) {
-        report(current, result);
-        cleanup();
-        current = null;
+    /** Startet die naechste Gruppe wartender Faelle gleichzeitig, jeden auf einer eigenen Bahn. */
+    private void startBatch() {
+        active.clear();
+        waited = 0;
+        World world = Bukkit.getWorlds().get(0);
+        int count = Math.min(BATCH, pending.size());
+        List<Case> batch = new ArrayList<>(pending.subList(0, count));
+        pending.subList(0, count).clear();
+        for (Case spec : batch) {
+            Lane lane = spec.negativeLane()
+                    ? new Lane(world, -600 - laneCounter * LANE_SPACING, -600, GROUND_Y)
+                    : new Lane(world, 200 + laneCounter * LANE_SPACING, 200, GROUND_Y);
+            laneCounter++;
+            ticketChunks(lane, spec.clear());
+            clearLane(lane, spec.clear());
+            spec.build().accept(lane);
+            active.add(new Active(spec, lane));
+        }
+        // Erst bauen, dann spawnen: ein Auto, das waehrend des Streckenbaus schon tickt,
+        // faellt durch den noch nicht gesetzten Boden.
+        for (Active a : active) {
+            if (a.spec.ticks() == 0) {
+                continue;
+            }
+            Case spec = a.spec;
+            a.car = carManager.spawnCar(new Location(a.lane.world(), a.lane.baseX() + 0.5,
+                    a.lane.groundY(), a.lane.baseZ() + 0.5, spec.yaw(), 0f), spec.yaw());
+            double rad = Math.toRadians(spec.yaw());
+            a.car.setVelX(-Math.sin(rad) * spec.startSpeed());
+            a.car.setVelZ(Math.cos(rad) * spec.startSpeed());
+            a.car.setSimDrive(spec.drive());
+            if (spec.tune() != null) {
+                spec.tune().accept(a.car);
+            }
+            a.car.setSimObserver(a.samples::add);
+            a.car.setSimTicks(spec.ticks());
+        }
+    }
+
+    /** Haelt die Bahn geladen: ohne Spieler in der Naehe entlaedt der Server sie sonst und
+     *  DriveTask ueberspringt das Auto ("kein Ticken in ungeladenen Chunks"). */
+    private void ticketChunks(Lane lane, Area area) {
+        World world = lane.world();
+        int margin = Math.max(area.halfWidth(), 16);
+        for (int cx = (lane.baseX() - margin) >> 4; cx <= (lane.baseX() + margin) >> 4; cx++) {
+            for (int cz = (lane.baseZ() + area.zFrom()) >> 4; cz <= (lane.baseZ() + area.zTo()) >> 4; cz++) {
+                world.addPluginChunkTicket(cx, cz, plugin);
+                tickets.add(new long[]{cx, cz});
+            }
+        }
+    }
+
+    private void releaseChunks() {
+        World world = Bukkit.getWorlds().get(0);
+        for (long[] c : tickets) {
+            world.removePluginChunkTicket((int) c[0], (int) c[1], plugin);
+        }
+        tickets.clear();
     }
 
     private void cleanup() {
-        if (car != null && carManager.getCarByBase(car.getBase().getUniqueId()) != null) {
-            carManager.removeCar(car, false);
+        releaseChunks();
+        for (Active a : active) {
+            if (a.car != null && carManager.getCarByBase(a.car.getBase().getUniqueId()) != null) {
+                carManager.removeCar(a.car, false);
+            }
         }
+        active.clear();
         for (Car extra : extraCars) {
             if (carManager.getCarByBase(extra.getBase().getUniqueId()) != null) {
                 carManager.removeCar(extra, false);
             }
         }
         extraCars.clear();
-        car = null;
     }
 
-    private void report(Scenario scenario, Result result) {
-        String name = pad(scenario.name());
-        if (result.ok() && !scenario.knownFail()) {
-            passed++;
-            log("PASS " + name + " " + result.detail());
-        } else if (result.ok()) {
+    /** Eine Ergebniszeile je Szenario; bei Sweeps zusaetzlich eine Zeile je auffaelligem Fall. */
+    private void reportScenario() {
+        String name = pad(current.name());
+        // Einzelszenarien tragen ihr Ergebnis in der Kopfzeile, Sweeps eine Bilanz plus
+        // eine Zeile je auffaelligem Fall. Am leeren Label haengt der Unterschied, nicht an
+        // der Anzahl — sonst zaehlt ein gefilterter Sweep mit genau einem Treffer falsch.
+        boolean single = current.cases().size() == 1 && current.cases().get(0).label().isEmpty();
+        String detail = single ? lastDetail
+                : fmt("%d Faelle: %d ok, %d bekannte Bugs, %d fehlgeschlagen", caseTotal, caseOk,
+                        caseKnown, caseBad);
+        knownFailed += caseKnown;
+        if (caseBad > 0) {
             failed++;
-            log("UNEXPECTED-PASS " + name + " " + result.detail()
-                    + " — knownFail-Flag entfernen, der Bug ist gefixt");
-        } else if (scenario.knownFail()) {
-            knownFailed++;
-            log("KNOWN-FAIL " + name + " " + result.detail());
+            log("FAIL " + name + " " + detail);
+        } else if (caseKnown == caseTotal) {
+            log("KNOWN-FAIL " + name + " " + detail);
         } else {
-            failed++;
-            log("FAIL " + name + " " + result.detail());
-            for (SimSample sample : trace()) {
-                log("  " + sample.describe());
-            }
+            passed++;
+            log("PASS " + name + " " + detail);
         }
-        if (verbose && !samples.isEmpty()) {
-            for (SimSample sample : samples) {
-                log("  " + sample.describe());
-            }
+        for (String note : caseNotes) {
+            log("  " + note);
         }
     }
 
     /** Die aussagekraeftigen Ticks fuer eine Fehlermeldung: rund um den ersten Blockade-Tick und das Ende. */
-    private List<SimSample> trace() {
+    private List<SimSample> trace(Active a) {
         List<SimSample> out = new ArrayList<>();
+        List<SimSample> samples = a.samples;
         int firstBlocked = -1;
         for (int i = 0; i < samples.size(); i++) {
             if (samples.get(i).blocked()) {
@@ -767,8 +980,8 @@ public final class SelfTest extends BukkitRunnable {
 
     private void summary() {
         long seconds = (System.currentTimeMillis() - startedAt) / 1000;
-        log(String.format(Locale.ROOT, "SUMMARY passed=%d failed=%d known-fail=%d dauer=%ds",
-                passed, failed, knownFailed, seconds));
+        log(String.format(Locale.ROOT, "SUMMARY passed=%d failed=%d known-fail=%d faelle=%d dauer=%ds",
+                passed, failed, knownFailed, totalCases, seconds));
         running = false;
         cancel();
     }
@@ -779,11 +992,11 @@ public final class SelfTest extends BukkitRunnable {
 
     // ────────────────────────────── Streckenbau ──────────────────────────────
 
-    /** Raeumt die Bahn frei — inklusive drei Blöcken HINTER dem Start (hintere Samples bei z−1,25). */
-    private void clearLane(Lane lane) {
-        for (int x = lane.baseX() - 3; x <= lane.baseX() + 3; x++) {
-            for (int z = lane.baseZ() - 5; z <= lane.baseZ() + 50; z++) {
-                for (int y = lane.groundY() - 26; y <= lane.groundY() + 8; y++) {
+    /** Raeumt die Bahn frei — inklusive Bloecken HINTER dem Start (hintere Samples bei z−1,25). */
+    private void clearLane(Lane lane, Area area) {
+        for (int x = lane.baseX() - area.halfWidth(); x <= lane.baseX() + area.halfWidth(); x++) {
+            for (int z = lane.baseZ() + area.zFrom(); z <= lane.baseZ() + area.zTo(); z++) {
+                for (int y = lane.groundY() + area.yFrom(); y <= lane.groundY() + area.yTo(); y++) {
                     lane.world().getBlockAt(x, y, z).setType(Material.AIR, false);
                 }
             }
@@ -937,5 +1150,520 @@ public final class SelfTest extends BukkitRunnable {
 
     private static String pad(String name) {
         return name.length() >= 24 ? name : name + " ".repeat(24 - name.length());
+    }
+
+    // ────────────────────────────── Sweeps ──────────────────────────────
+    //
+    // Systematisch statt stichprobenartig: jede erreichbare Stufenhoehe, jeder Belagswechsel,
+    // jede Rampenneigung und ein breiter Querschnitt echter Bloecke. Die Erwartung kommt
+    // ueberall aus der ECHTEN Kollisionsform des gebauten Blocks (supportTop) und den
+    // Physik-Konstanten (DriveTask.MAX_STEP / MAX_STEP_DOWN) — eine handgepflegte
+    // Hoehentabelle waere mit der naechsten Minecraft-Version falsch, ohne dass es auffaellt.
+
+    /** Anlauf bis SEAM, ab dort das Testobjekt, Wand am Ende der kurzen Sweep-Strecke. */
+    private static final int SEAM = 6;
+    private static final int SWEEP_END = 18;
+    private static final double SWEEP_MIN_TRAVEL = 10.0;
+    private static final Area DEEP_CLEAR = new Area(3, -5, 22, -14, 6);
+
+    /** Ein Belag mit definierter Oberkante; snowLayers > 0 setzt zusaetzlich die Schneehoehe. */
+    private record Surface(String label, Material material, int snowLayers) {
+    }
+
+    private static final List<Surface> RISERS = List.of(
+            new Surface("teppich", Material.WHITE_CARPET, 0),
+            new Surface("schnee2", Material.SNOW, 2),
+            new Surface("falltuer", Material.OAK_TRAPDOOR, 0),
+            new Surface("schnee3", Material.SNOW, 3),
+            new Surface("schnee4", Material.SNOW, 4),
+            new Surface("tageslichtsensor", Material.DAYLIGHT_DETECTOR, 0),
+            new Surface("steinstufe", Material.STONE_SLAB, 0),
+            new Surface("bett", Material.WHITE_BED, 0),
+            new Surface("steinsaege", Material.STONECUTTER, 0),
+            new Surface("schnee6", Material.SNOW, 6),
+            new Surface("zaubertisch", Material.ENCHANTING_TABLE, 0),
+            new Surface("schnee7", Material.SNOW, 7),
+            new Surface("schlamm", Material.MUD, 0),
+            new Surface("truhe", Material.CHEST, 0),
+            new Surface("schnee8", Material.SNOW, 8),
+            new Surface("ackerland", Material.FARMLAND, 0),
+            new Surface("pfad", Material.DIRT_PATH, 0),
+            new Surface("vollblock", Material.STONE, 0),
+            new Surface("treppe", Material.STONE_BRICK_STAIRS, 0),
+            new Surface("zaun", Material.OAK_FENCE, 0),
+            new Surface("mauer", Material.COBBLESTONE_WALL, 0));
+
+    /** Flache Belaege, die eine ganze Bahnzeile ausfuellen (fuer Stufen- und Wechsel-Matrix). */
+    private static final List<Surface> FLAT_SURFACES = List.of(
+            new Surface("stein", Material.STONE, 0),
+            new Surface("gras", Material.GRASS_BLOCK, 0),
+            new Surface("beton", Material.WHITE_CONCRETE, 0),
+            new Surface("kies", Material.GRAVEL, 0),
+            new Surface("packeis", Material.PACKED_ICE, 0),
+            new Surface("pfad", Material.DIRT_PATH, 0),
+            new Surface("ackerland", Material.FARMLAND, 0),
+            new Surface("schlamm", Material.MUD, 0),
+            new Surface("seelensand", Material.SOUL_SAND, 0),
+            new Surface("steinstufe", Material.STONE_SLAB, 0));
+
+    /** 1 — Aufstieg ueber jede erreichbare Stufenhoehe von 1/16 bis 1 1/2 Bloecken. */
+    private void stepUpHeights() {
+        Sweep sweep = sweep("step-up-heights");
+        for (Surface riser : RISERS) {
+            sweep.run(riser.label(), false, 1.0, true, lane -> {
+                track(lane, -4, SWEEP_END, GROUND_Y - 1, Material.STONE);
+                for (int z = SEAM; z <= SWEEP_END; z++) {
+                    placeSurface(lane, z, GROUND_Y, riser);
+                }
+                wall(lane, SWEEP_END, GROUND_Y + 1);
+            }, run -> {
+                Lane l = run.lane();
+                double step = supportTop(l.world(), l.baseX(), GROUND_Y, l.baseZ() + SEAM + 2);
+                double reached = maxZ(run);
+                SimSample last = lastSample(run);
+                if (step <= DriveTask.MAX_STEP + 1.0e-9) {
+                    if (reached < SWEEP_MIN_TRAVEL) {
+                        return Result.fail(fmt("Stufe %.4f nicht genommen: z=%.3f (v=%.3f)",
+                                step, reached, last.speed()));
+                    }
+                    if (last.y() < GROUND_Y + step - 0.05) {
+                        return Result.fail(fmt("Stufe %.4f: steht bei y=%.3f statt %.3f",
+                                step, last.y(), GROUND_Y + step));
+                    }
+                    return Result.pass(fmt("Stufe %.4f genommen (z=%.3f)", step, reached));
+                }
+                if (reached > SEAM - 0.5) {
+                    return Result.fail(fmt("Stufe %.4f ueber MAX_STEP wurde ueberfahren: z=%.3f",
+                            step, reached));
+                }
+                return Result.pass(fmt("Stufe %.4f blockiert wie erwartet (z=%.3f)", step, reached));
+            });
+        }
+        sweep.done();
+    }
+
+    /** 2 — dieselbe GANZE Stufe von jedem Belag aus. Erwartet wird die Nutzer-Sicht:
+     *  was wie ein Block aussieht, muss befahrbar sein. Belaege mit gekappter Oberkante
+     *  reissen dabei MAX_STEP — das ist der offene Bug, deshalb knownFail. */
+    private void stepUpFromSurfaces() {
+        Sweep sweep = sweep("step-up-from");
+        for (Surface start : FLAT_SURFACES) {
+            if (start.material() == Material.PACKED_ICE) {
+                continue; // Eis testet Grip, nicht Geometrie — der Anlauf waere zu schwach
+            }
+            boolean looksLikeFullBlock = start.material() != Material.STONE_SLAB;
+            sweep.run(start.label(), looksLikeFullBlock && !isFullHeight(start), 1.0, true, lane -> {
+                track(lane, -4, SWEEP_END, GROUND_Y - 2, Material.STONE);
+                for (int z = -4; z < SEAM; z++) {
+                    placeSurface(lane, z, GROUND_Y - 1, start);
+                }
+                track(lane, SEAM, SWEEP_END, GROUND_Y - 1, Material.STONE);
+                track(lane, SEAM, SWEEP_END, GROUND_Y, Material.STONE);
+                wall(lane, SWEEP_END, GROUND_Y + 1);
+            }, run -> {
+                Lane l = run.lane();
+                double top = supportTop(l.world(), l.baseX(), GROUND_Y - 1, l.baseZ());
+                double step = 2.0 - top;
+                double reached = maxZ(run);
+                boolean shouldClimb = step <= DriveTask.MAX_STEP + 1.0e-9 || top >= 0.75;
+                if (shouldClimb) {
+                    if (reached < SWEEP_MIN_TRAVEL) {
+                        return Result.fail(fmt("von %s (Oberkante %.4f) aus bleibt die 1-Block-Stufe "
+                                + "bei z=%.3f stehen — sie misst %.4f > MAX_STEP %.1f",
+                                start.label(), top, reached, step, DriveTask.MAX_STEP));
+                    }
+                    return Result.pass(fmt("1-Block-Stufe von %s (Oberkante %.4f, Stufe %.4f) genommen",
+                            start.label(), top, step));
+                }
+                if (reached > SEAM - 0.5) {
+                    return Result.fail(fmt("Stufe %.4f von %s aus wurde ueberfahren: z=%.3f",
+                            step, start.label(), reached));
+                }
+                return Result.pass(fmt("Stufe %.4f von %s aus blockiert wie erwartet",
+                        step, start.label()));
+            });
+        }
+        sweep.done();
+    }
+
+    /** 3 — Abstieg ueber jede Hoehe: bis MAX_STEP_DOWN muss das Auto dem Boden folgen,
+     *  darueber darf es fallen — landen und weiterfahren muss es immer. */
+    private void stepDownHeights() {
+        Sweep sweep = sweep("step-down-heights", DEEP_CLEAR);
+        double[] drops = {0.0625, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 0.9375,
+                1.0, 1.0625, 1.125, 1.1875, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 5.0};
+        for (double drop : drops) {
+            double target = GROUND_Y - drop;
+            // Offener Bug: ein Abstieg zwischen MAX_STEP und MAX_STEP_DOWN ist eine Falle.
+            // Das Auto folgt dem Boden hinunter (erlaubt bis MAX_STEP_DOWN), steht dann aber
+            // mit dem Heck-Sample vor einer Kante, die hoeher als MAX_STEP ist — es kann die
+            // Stufe, die es gerade heruntergefahren ist, nicht mehr verlassen und steht fuer
+            // immer. Tiefere Abstiege sind harmlos, weil sie als Fall behandelt werden.
+            boolean trap = drop > DriveTask.MAX_STEP + 1.0e-9
+                    && drop <= DriveTask.MAX_STEP_DOWN + 1.0e-9;
+            sweep.run(fmt("abstieg-%.4f", drop), trap, 1.0, true, target - 3.0, lane -> {
+                track(lane, -4, SEAM - 1, GROUND_Y - 1, Material.STONE);
+                for (int z = SEAM; z <= SWEEP_END; z++) {
+                    surfaceAtTop(lane, z, target);
+                }
+                wall(lane, SWEEP_END, (int) Math.floor(target));
+            }, run -> {
+                double reached = maxZ(run);
+                SimSample last = lastSample(run);
+                long air = run.samples().stream().filter(s -> !s.grounded()).count();
+                double lowest = run.samples().stream().mapToDouble(SimSample::y).min().orElse(0);
+                if (reached < SWEEP_MIN_TRAVEL) {
+                    return Result.fail(fmt("Abstieg %.4f: bleibt bei z=%.3f haengen (v=%.3f)",
+                            drop, reached, last.speed()));
+                }
+                if (!last.grounded() || Math.abs(last.y() - target) > 0.05) {
+                    return Result.fail(fmt("Abstieg %.4f: endet bei y=%.3f (erwartet %.3f), grounded=%s",
+                            drop, last.y(), target, last.grounded()));
+                }
+                if (lowest < target - 0.05) {
+                    return Result.fail(fmt("Abstieg %.4f: faellt unter die Strecke (y=%.3f)", drop, lowest));
+                }
+                if (drop <= DriveTask.MAX_STEP_DOWN && air > 0) {
+                    return Result.fail(fmt("Abstieg %.4f: %d Ticks ohne Bodenkontakt, "
+                            + "bis MAX_STEP_DOWN %.1f muss das Auto dem Boden folgen",
+                            drop, air, DriveTask.MAX_STEP_DOWN));
+                }
+                return Result.pass(fmt("Abstieg %.4f sauber (%d Ticks Flug, z=%.3f)", drop, air, reached));
+            });
+        }
+        sweep.done();
+    }
+
+    /** 4 — Steigungen und Gefaelle. Zwei Familien, weil sie sich grundlegend unterscheiden:
+     *  ganze Blockstufen (echtes Minecraft-Gelaende, muss fahrbar sein) und Teilblock-Rampen
+     *  aus Schnee/Stufen (dort stoesst das zellenweise Kollisionsmodell an seine Grenze). */
+    private void slopes() {
+        int[] runs = {1, 2, 3, 4, 6, 8};
+        Sweep up = sweep("slope-up", SLOPE_CLEAR);
+        for (int run : runs) {
+            addBlockSlope(up, "hoch-1-auf-" + run, run, 1);
+        }
+        up.done();
+
+        Sweep down = sweep("slope-down", SLOPE_CLEAR);
+        for (int run : runs) {
+            addBlockSlope(down, "runter-1-auf-" + run, run, -1);
+        }
+        down.done();
+
+        // Teilblock-Rampen: die Oberkanten liegen zwischen den Zellgrenzen. Sobald das Auto
+        // auf einer solchen Hoehe steht, ragt der Nachbarbelag in seine KOPF-Zelle — und die
+        // gilt pauschal als unueberwindbar, egal wie flach die Stufe wirklich ist. Genau
+        // dieselbe Wurzel wie die 1-Block-Stufe von Ackerland aus.
+        Sweep sub = sweep("slope-subblock", SLOPE_CLEAR);
+        for (double rise : new double[]{0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875}) {
+            // Bergauf blockiert JEDE Teilblock-Rampe. Bergab haengt es davon ab, wie die
+            // Oberkanten der Nachbarzeilen zufaellig zu den Zellgrenzen liegen — 3/8, 5/8 und
+            // 7/8 je Block bleiben stecken, 1/8, 1/4, 1/2 und 3/4 kommen durch. Diese Liste
+            // ist bewusst der IST-Stand: aendert sich das Kollisionsmodell, meldet der Lauf
+            // UNEXPECTED-PASS bzw. FAIL und die Werte gehoeren neu vermessen.
+            boolean stuckDownhill = rise == 0.375 || rise == 0.625 || rise == 0.875;
+            addSubBlockSlope(sub, fmt("hoch-%.3f-je-block", rise), rise, 1, true);
+            addSubBlockSlope(sub, fmt("runter-%.3f-je-block", rise), rise, -1, stuckDownhill);
+        }
+        sub.done();
+    }
+
+    /** Rampe aus ganzen Bloecken: eine Stufe je {@code run} Bloecke, insgesamt drei Bloecke. */
+    private void addBlockSlope(Sweep sweep, String label, int run, int dir) {
+        // Bergauf braucht eine Stufe Vorlauf: auf Stufe N steht die 1,25 Bloecke lange Nase
+        // schon ueber Stufe N+1. Bei 45 Grad (1 Block je Block) ist das eine ganze Stufe
+        // hoeher — canStandAt lehnt ab, das Auto kommt die Treppe nicht hinauf.
+        boolean expectBlocked = dir > 0 && run == 1;
+        int steps = 3;
+        int length = steps * run;
+        int end = GROUND_Y + dir * steps;
+        double lowest = Math.min(GROUND_Y, end);
+        sweep.run(label, false, dir > 0 ? 1.0 : 0.6, dir > 0, lowest - 3.0, lane -> {
+            for (int z = -4; z < SEAM; z++) {
+                floorAt(lane, z, GROUND_Y - 1, Material.STONE);
+            }
+            for (int z = SEAM; z <= SEAM + length; z++) {
+                int level = GROUND_Y + dir * Math.min(steps, (z - SEAM + run) / run);
+                fillTo(lane, z, level);
+            }
+            for (int z = SEAM + length + 1; z <= SEAM + length + 6; z++) {
+                fillTo(lane, z, end);
+            }
+            wall(lane, SEAM + length + 6, end);
+        }, run2 -> {
+            SimSample last = lastSample(run2);
+            double reached = maxZ(run2);
+            long air = run2.samples().stream().filter(s -> !s.grounded()).count();
+            double lowestY = run2.samples().stream().mapToDouble(SimSample::y).min().orElse(0);
+            double topSpeed = run2.samples().stream().mapToDouble(SimSample::speed).max().orElse(0);
+            if (expectBlocked) {
+                if (reached > SEAM) {
+                    return Result.fail(fmt("45-Grad-Treppe wurde erklommen: z=%.3f y=%.3f",
+                            reached, last.y()));
+                }
+                return Result.pass(fmt("45-Grad-Treppe blockiert wie erwartet (z=%.3f) — die Nase "
+                        + "steht auf der naechsten Stufe auf", reached));
+            }
+            if (lowestY < lowest - 0.05) {
+                return Result.fail(fmt("faellt unter die Rampe: y=%.3f statt mindestens %.3f",
+                        lowestY, lowest));
+            }
+            if (reached < SEAM + length) {
+                return Result.fail(fmt("erreicht das Rampenende nicht: z=%.3f von %d (v=%.3f, y=%.3f)",
+                        reached, SEAM + length, last.speed(), last.y()));
+            }
+            if (!last.grounded() || Math.abs(last.y() - end) > 0.05) {
+                return Result.fail(fmt("endet bei y=%.3f (erwartet %d), grounded=%s",
+                        last.y(), end, last.grounded()));
+            }
+            if (dir < 0 && run >= 2 && air > 0) {
+                return Result.fail(fmt("%d Ticks Flug am sanften Gefaelle (1 Block auf %d)", air, run));
+            }
+            return Result.pass(fmt("z=%.3f y=%.3f vmax=%.3f, %d Ticks Flug", reached, last.y(),
+                    topSpeed, air));
+        });
+    }
+
+    /** Rampe mit Teilblock-Neigung: Oberkante steigt/faellt um {@code rise} je Block. */
+    private void addSubBlockSlope(Sweep sweep, String label, double rise, int dir, boolean knownFail) {
+        int length = 12;
+        double end = GROUND_Y + dir * rise * length;
+        double lowest = Math.min(GROUND_Y, end);
+        sweep.run(label, knownFail, dir > 0 ? 1.0 : 0.6, dir > 0, lowest - 3.0, lane -> {
+            for (int z = -4; z < SEAM; z++) {
+                surfaceAtTop(lane, z, GROUND_Y);
+            }
+            for (int z = SEAM; z <= SEAM + length; z++) {
+                surfaceAtTop(lane, z, GROUND_Y + dir * rise * (z - SEAM));
+            }
+            for (int z = SEAM + length + 1; z <= SEAM + length + 6; z++) {
+                surfaceAtTop(lane, z, end);
+            }
+            wall(lane, SEAM + length + 6, (int) Math.floor(end));
+        }, run -> {
+            SimSample last = lastSample(run);
+            double reached = maxZ(run);
+            double lowestY = run.samples().stream().mapToDouble(SimSample::y).min().orElse(0);
+            if (lowestY < lowest - 0.05) {
+                return Result.fail(fmt("faellt unter die Rampe: y=%.3f statt mindestens %.3f",
+                        lowestY, lowest));
+            }
+            if (reached < SEAM + length) {
+                return Result.fail(fmt("bleibt bei z=%.3f von %d stehen (y=%.3f, v=%.3f) — die "
+                        + "Nachbarzeile ragt in die Kopf-Zelle floor(y)+1 und gilt als unueberwindbar",
+                        reached, SEAM + length, last.y(), last.speed()));
+            }
+            if (!last.grounded() || Math.abs(last.y() - end) > 0.05) {
+                return Result.fail(fmt("endet bei y=%.3f (erwartet %.3f), grounded=%s",
+                        last.y(), end, last.grounded()));
+            }
+            return Result.pass(fmt("Teilblock-Rampe %.3f je Block durchfahren, z=%.3f y=%.3f",
+                    rise, reached, last.y()));
+        });
+    }
+
+    /** 5 — Belagswechsel: jede geordnete Kombination aus der flachen Palette.
+     *  Deckt "von Pfad auf normalen Block" in beide Richtungen vollstaendig ab. */
+    private void surfaceTransitions() {
+        Sweep sweep = sweep("surface-transition");
+        for (Surface from : FLAT_SURFACES) {
+            for (Surface to : FLAT_SURFACES) {
+                if (from == to) {
+                    continue;
+                }
+                sweep.run(from.label() + "->" + to.label(), false, 1.0, true, lane -> {
+                    track(lane, -4, SWEEP_END, GROUND_Y - 2, Material.STONE);
+                    for (int z = -4; z < SEAM; z++) {
+                        placeSurface(lane, z, GROUND_Y - 1, from);
+                    }
+                    for (int z = SEAM; z <= SWEEP_END; z++) {
+                        placeSurface(lane, z, GROUND_Y - 1, to);
+                    }
+                    wall(lane, SWEEP_END, GROUND_Y);
+                }, run -> {
+                    Lane l = run.lane();
+                    double a = supportTop(l.world(), l.baseX(), GROUND_Y - 1, l.baseZ());
+                    double b = supportTop(l.world(), l.baseX(), GROUND_Y - 1, l.baseZ() + SEAM + 2);
+                    double reached = maxZ(run);
+                    long air = run.samples().stream().filter(s -> !s.grounded()).count();
+                    SimSample last = lastSample(run);
+                    if (reached < SWEEP_MIN_TRAVEL) {
+                        return Result.fail(fmt("bleibt an der Kante %.4f->%.4f bei z=%.3f haengen (v=%.3f)",
+                                a, b, reached, last.speed()));
+                    }
+                    if (Math.abs(b - a) <= 0.5 && air > 0) {
+                        return Result.fail(fmt("%d Ticks ohne Bodenkontakt an der flachen Kante %.4f->%.4f",
+                                air, a, b));
+                    }
+                    return Result.pass(fmt("%.4f->%.4f, z=%.3f", a, b, reached));
+                });
+            }
+        }
+        sweep.done();
+    }
+
+    /** Ein einzelnes Hindernis auf der Strecke; base ersetzt bei Bedarf den Boden darunter
+     *  (Weizen braucht Ackerland, Seerose braucht Wasser). */
+    private record Obstacle(String label, Material material, Material base) {
+        Obstacle(String label, Material material) {
+            this(label, material, null);
+        }
+    }
+
+    private static final List<Obstacle> OBSTACLES = List.of(
+            new Obstacle("kuchen", Material.CAKE),
+            new Obstacle("bett", Material.WHITE_BED),
+            new Obstacle("teppich", Material.WHITE_CARPET),
+            new Obstacle("steinstufe", Material.STONE_SLAB),
+            new Obstacle("treppe", Material.STONE_BRICK_STAIRS),
+            new Obstacle("falltuer", Material.OAK_TRAPDOOR),
+            new Obstacle("zaubertisch", Material.ENCHANTING_TABLE),
+            new Obstacle("tageslichtsensor", Material.DAYLIGHT_DETECTOR),
+            new Obstacle("truhe", Material.CHEST),
+            new Obstacle("trichter", Material.HOPPER),
+            new Obstacle("kessel", Material.CAULDRON),
+            new Obstacle("komposter", Material.COMPOSTER),
+            new Obstacle("schleifstein", Material.GRINDSTONE),
+            new Obstacle("steinsaege", Material.STONECUTTER),
+            new Obstacle("lesepult", Material.LECTERN),
+            new Obstacle("fass", Material.BARREL),
+            new Obstacle("amboss", Material.ANVIL),
+            new Obstacle("glocke", Material.BELL),
+            new Obstacle("blumentopf", Material.FLOWER_POT),
+            new Obstacle("laterne", Material.LANTERN),
+            new Obstacle("kerze", Material.CANDLE),
+            new Obstacle("schildkroetenei", Material.TURTLE_EGG),
+            new Obstacle("meergurke", Material.SEA_PICKLE),
+            new Obstacle("braustand", Material.BREWING_STAND),
+            new Obstacle("endstab", Material.END_ROD),
+            new Obstacle("kette", Material.IRON_CHAIN),
+            new Obstacle("eisengitter", Material.IRON_BARS),
+            new Obstacle("glasscheibe", Material.GLASS_PANE),
+            new Obstacle("zaun", Material.OAK_FENCE),
+            new Obstacle("zauntor", Material.OAK_FENCE_GATE),
+            new Obstacle("mauer", Material.COBBLESTONE_WALL),
+            new Obstacle("geruest", Material.SCAFFOLDING),
+            new Obstacle("spinnennetz", Material.COBWEB),
+            new Obstacle("pulverschnee", Material.POWDER_SNOW),
+            new Obstacle("gras", Material.SHORT_GRASS),
+            new Obstacle("fackel", Material.TORCH),
+            new Obstacle("schiene", Material.RAIL),
+            new Obstacle("druckplatte", Material.STONE_PRESSURE_PLATE),
+            new Obstacle("knopf", Material.STONE_BUTTON),
+            new Obstacle("hebel", Material.LEVER),
+            new Obstacle("redstone", Material.REDSTONE_WIRE),
+            new Obstacle("schild", Material.OAK_SIGN),
+            new Obstacle("leiter", Material.LADDER),
+            new Obstacle("bambus", Material.BAMBOO),
+            new Obstacle("tropfstein", Material.POINTED_DRIPSTONE),
+            new Obstacle("amethyst", Material.AMETHYST_CLUSTER),
+            new Obstacle("lagerfeuer", Material.CAMPFIRE),
+            new Obstacle("leuchtfeuer", Material.BEACON),
+            new Obstacle("magmablock", Material.MAGMA_BLOCK),
+            new Obstacle("schleimblock", Material.SLIME_BLOCK),
+            new Obstacle("honigblock", Material.HONEY_BLOCK),
+            new Obstacle("kaktus", Material.CACTUS),
+            new Obstacle("weizen", Material.WHEAT, Material.FARMLAND),
+            new Obstacle("seerose", Material.LILY_PAD, Material.WATER));
+
+    /** 6 — ueber einen einzelnen Block fahren: Kuchen, Truhe, Zaun, Schiene, Weizen …
+     *  Was passierbar ist, darf gar nicht bremsen; was bis MAX_STEP hoch ist, wird ueberfahren;
+     *  was hoeher ist, blockiert. Die Entscheidung faellt aus der echten Kollisionsform. */
+    private void driveOverObstacles() {
+        Sweep sweep = sweep("drive-over");
+        for (Obstacle obstacle : OBSTACLES) {
+            sweep.run(obstacle.label(), false, 1.0, true, lane -> {
+                track(lane, -4, SWEEP_END, GROUND_Y - 1, Material.STONE);
+                if (obstacle.base() != null) {
+                    floorAt(lane, SEAM, GROUND_Y - 1, obstacle.base());
+                }
+                floorAt(lane, SEAM, GROUND_Y, obstacle.material());
+                wall(lane, SWEEP_END, GROUND_Y);
+            }, run -> {
+                Lane l = run.lane();
+                var block = l.world().getBlockAt(l.baseX(), GROUND_Y, l.baseZ() + SEAM);
+                double top = supportTop(l.world(), l.baseX(), GROUND_Y, l.baseZ() + SEAM);
+                boolean passable = block.getType().isAir() || block.isPassable();
+                double reached = maxZ(run);
+                SimSample last = lastSample(run);
+                String what = fmt("%s (Oberkante %.4f%s)", block.getType().name(), top,
+                        passable ? ", passierbar" : "");
+                if (passable || top <= DriveTask.MAX_STEP + 1.0e-9) {
+                    if (reached < SWEEP_MIN_TRAVEL) {
+                        return Result.fail(fmt("%s haelt das Auto bei z=%.3f auf (v=%.3f)",
+                                what, reached, last.speed()));
+                    }
+                    if (Math.abs(last.y() - GROUND_Y) > 0.05) {
+                        return Result.fail(fmt("%s: das Auto kommt nicht wieder herunter (y=%.3f)",
+                                what, last.y()));
+                    }
+                    return Result.pass(fmt("%s ueberfahren (z=%.3f)", what, reached));
+                }
+                if (reached > SEAM - 0.5) {
+                    return Result.fail(fmt("%s ist hoeher als MAX_STEP und wurde ueberfahren: z=%.3f",
+                            what, reached));
+                }
+                return Result.pass(fmt("%s blockiert wie erwartet (z=%.3f)", what, reached));
+            });
+        }
+        sweep.done();
+    }
+
+    // ── Bau-Helfer der Sweeps ──
+
+    /** Ganze Bloecke, deren Oberkante bei {@code level} liegt (drei Bloecke Unterbau). */
+    private void fillTo(Lane lane, int zRel, int level) {
+        for (int y = level - 3; y < level; y++) {
+            floorAt(lane, zRel, y, Material.STONE);
+        }
+    }
+
+    private void placeSurface(Lane lane, int zRel, int y, Surface surface) {
+        for (int x = lane.baseX() - 2; x <= lane.baseX() + 2; x++) {
+            var block = lane.world().getBlockAt(x, y, lane.baseZ() + zRel);
+            block.setType(surface.material(), false);
+            if (surface.snowLayers() > 0) {
+                Snow snow = (Snow) block.getBlockData();
+                snow.setLayers(surface.snowLayers());
+                block.setBlockData(snow, false);
+            }
+        }
+    }
+
+    private boolean isFullHeight(Surface surface) {
+        return switch (surface.material()) {
+            case STONE, GRASS_BLOCK, WHITE_CONCRETE, GRAVEL, SNOW_BLOCK, PACKED_ICE -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Baut die Bahnzeile so auf, dass ihre Kollisions-Oberkante GENAU topAbs ist:
+     * volle Bloecke bis darunter, den Rest ueber Schneelagen (SNOW[L] endet bei (L−1)/8),
+     * ein Sechzehntel ueber Teppich und fuenfzehn Sechzehntel ueber Ackerland.
+     * Damit sind Rampen mit beliebiger Achtel-Neigung baubar.
+     */
+    private void surfaceAtTop(Lane lane, int zRel, double topAbs) {
+        int base = (int) Math.floor(topAbs + 1.0e-9);
+        double frac = topAbs - base;
+        // Drei Bloecke Unterbau genuegen und halten den Streckenbau billig; ein fester
+        // Boden bei GROUND_Y-12 riss bei tiefen Rampen unten ab und das Auto fiel durch.
+        for (int y = base - 3; y < base; y++) {
+            floorAt(lane, zRel, y, Material.STONE);
+        }
+        if (frac < 1.0e-6) {
+            return;
+        }
+        if (Math.abs(frac - 0.0625) < 1.0e-6) {
+            floorAt(lane, zRel, base, Material.WHITE_CARPET);
+            return;
+        }
+        if (Math.abs(frac - 0.9375) < 1.0e-6) {
+            floorAt(lane, zRel, base, Material.FARMLAND);
+            return;
+        }
+        int layers = (int) Math.round(frac * 8.0) + 1;
+        placeSurface(lane, zRel, base, new Surface("", Material.SNOW, layers));
     }
 }

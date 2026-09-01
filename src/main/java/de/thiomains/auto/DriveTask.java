@@ -42,7 +42,7 @@ public final class DriveTask extends BukkitRunnable {
     private static final double SPEED_EPSILON = 0.05;
     private static final double SLIP_SOUND_MIN_DEG = 12.0;
     private static final double SAMPLE_STEP = 0.4;
-    private static final double MAX_STEP = 1.0;
+    static final double MAX_STEP = 1.0;
     private static final double LONG_HALF = 1.25;
     private static final double LAT_HALF = 0.9;
     private static final double CAR_COLLISION_RADIUS = 1.4;
@@ -51,7 +51,7 @@ public final class DriveTask extends BukkitRunnable {
     private static final double WATER_DRAG = 0.10;
     private static final double LANDING_SOUND_MIN_FALL = 0.5; // ~36 km/h vertikal
     private static final double LANDING_SPEED_KEEP = 0.7;
-    private static final double MAX_STEP_DOWN = 1.2;
+    static final double MAX_STEP_DOWN = 1.2;
     private static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
     private static final double OVERSPEED_DOWNHILL_FACTOR = 1.5;
     private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller

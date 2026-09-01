@@ -28,9 +28,10 @@ Artefakt: `target/auto-<version>.jar`. Version im `pom.xml` pflegen (wird per Fi
 **Automatisch (der Normalfall):**
 
 ```bash
-scripts/selftest.sh              # nur Ergebniszeilen und Fehlschlaege
-scripts/selftest.sh --verbose    # zusaetzlich jeder Tick und das komplette Serverlog
-scripts/selftest.sh --only step  # nur Szenarien, deren Name "step" enthaelt
+scripts/selftest.sh                    # nur Ergebniszeilen und Fehlschlaege
+scripts/selftest.sh --verbose          # zusaetzlich jeder Tick und das komplette Serverlog
+scripts/selftest.sh --only step        # nur Szenarien, deren Name "step" enthaelt
+scripts/selftest.sh --only kuchen      # bei Sweeps zieht auch das Fall-Label
 ```
 
 Das Skript baut, laedt bei Bedarf ein Paper-JAR von `fill.papermc.io` nach `.testserver/`
@@ -44,18 +45,56 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   **hinter** dem Start frei (hintere Kollisions-Samples liegen bei z−1,25) und endet in einer
   **Wand**: ohne die faehrt das Auto hinten heraus, faellt in die Flachwelt und fuehrt jede
   Distanzmessung ad absurdum. Zusaetzlich bricht die `minY`-Sicherung so einen Lauf ab.
-- `knownFail` markiert Szenarien fuer bekannte, offene Bugs: sie duerfen fehlschlagen, ohne den
-  Lauf rot zu faerben. Besteht so eines ploetzlich, meldet der Lauf `UNEXPECTED-PASS` und wird
-  rot — dann ist der Bug gefixt und das Flag muss weg.
-- Aktuell offen (`knownFail`): **von Belaegen mit reduzierter Oberkante (Farmland/Grasweg 0,9375,
-  Schlamm/Seelensand 0,875) ist eine ganze 1-Block-Stufe nicht befahrbar** — die Hindernis-Oberkante
-  liegt dann 1,0625 bzw. 1,125 ueber dem Auto und reisst `MAX_STEP` (1,0). Von Stein aus geht
-  dieselbe Stufe.
+- **Sweeps** fassen viele kurze Faelle unter einem Namen zusammen und fahren sie zu je
+  `BATCH` (12) Stueck **gleichzeitig** auf eigenen Baehnen — eine Matrix ueber alle Stufenhoehen,
+  Belagswechsel und Hindernisse waere sonst nicht in vertretbarer Zeit zu fahren (257 Faelle
+  in rund vier Minuten). Die Baehnen werden per `addPluginChunkTicket` geladen gehalten:
+  ohne Spieler in der Naehe entlaedt der Server sie sonst und `DriveTask` ueberspringt das Auto.
+  Geladene Chunks **ticken** aber auch — Ackerland trocknet zu Dirt aus, Schnee schmilzt, Kaktus
+  waechst — und das aendert die Strecke waehrend der Messung. `SelfTest.start()` setzt deshalb
+  `RANDOM_TICK_SPEED=0` und `DO_FIRE_TICK=false`; ohne das ist der Lauf flaky.
+  Ergebniszeile ist eine Bilanz plus eine Zeile je auffaelligem Fall.
+- **Erwartungen kommen aus der echten Kollisionsform** (`supportTop`) und den Physik-Konstanten
+  (`DriveTask.MAX_STEP`, `MAX_STEP_DOWN`), nicht aus einer gepflegten Hoehentabelle — die waere
+  mit der naechsten Minecraft-Version falsch, ohne dass es auffaellt. Die Sweeps loggen die
+  gemessene Oberkante jedes Blocks mit; `--verbose` ergibt damit eine lebende Referenztabelle.
+- `knownFail` markiert Szenarien und einzelne Sweep-Faelle fuer bekannte, offene Bugs: sie duerfen
+  fehlschlagen, ohne den Lauf rot zu faerben. Besteht so einer ploetzlich, meldet der Lauf
+  `UNEXPECTED-PASS` und wird rot — dann ist der Bug gefixt und das Flag muss weg.
+- **Aktuell offen (`knownFail`) — drei Auspraegungen derselben Wurzel:** die Kollision ist
+  zellenweise gedacht. `columnObstacleTop` behandelt **jede** Belegung der Kopf-Zelle
+  `floor(y)+1` als unueberwindbar, egal wie flach das Hindernis wirklich ist. Steht das Auto
+  auf einer Oberkante zwischen zwei Zellgrenzen (Ackerland, Schlamm, Schnee, Stufen), ragt der
+  Nachbarbelag genau dort hinein:
+  1. `step-up-from`: **eine ganze 1-Block-Stufe ist von Ackerland/Grasweg (0,9375) und
+     Schlamm/Seelensand (0,875) aus nicht befahrbar** (Stufe misst 1,0625 bzw. 1,125). Von
+     Stein, Gras, Beton und Kies aus geht dieselbe Stufe.
+  2. `step-down-heights`: **ein Abstieg zwischen `MAX_STEP` (1,0) und `MAX_STEP_DOWN` (1,2)
+     ist eine Falle** — das Auto folgt dem Boden hinunter, steht dann mit dem Heck-Sample vor
+     einer Kante ueber `MAX_STEP` und kommt fuer immer nicht mehr heraus (v=0, `blocked=true`).
+     Tiefere Abstiege sind harmlos, weil sie als Fall behandelt werden. Praxisfall: von einer
+     Steinstrasse einen Block hinunter auf ein Feld.
+  3. `slope-subblock`: **jede Teilblock-Rampe (Schnee, Stufen) blockiert bergauf**; bergab
+     bleiben 3/8, 5/8 und 7/8 je Block stecken, 1/8, 1/4, 1/2 und 3/4 kommen durch. Welche
+     Neigung haengt, entscheidet die zufaellige Lage der Oberkanten zu den Zellgrenzen — die
+     Liste im Code ist bewusst der IST-Stand.
+- **Kein Bug, sondern Folge der Fahrzeuglaenge:** eine 45-Grad-Treppe (ein Block je Block) ist
+  bergauf nicht befahrbar. Auf Stufe N steht die 1,25 Bloecke lange Nase schon ueber Stufe N+1,
+  `canStandAt` lehnt ab. Ab einem Block auf zwei geht es (`slope-up`), bergab geht auch 45 Grad.
 - Die flache 1/16-Kante (Farmland -> Vollblock auf gleicher Hoehe) ist dagegen nachweislich in
   Ordnung — die `edge-*`-Szenarien decken gerade/schraege/quere/drehende Anfahrt, Kriechtempo,
   Anfahren aus dem Stand, Fahrt laengs auf der Kante, ein Farmland-Feld mitten in Stein und
   negative Weltkoordinaten ab. Wer dort erneut ein Steckenbleiben meldet: erst pruefen, ob das
   Ziel nicht doch einen ganzen Block hoeher liegt (dann greift der Punkt darueber).
+- Flaechendeckend abgesichert sind ausserdem: **jede erreichbare Stufenhoehe** von 1/16 bis
+  1 1/2 Bloecken hinauf (`step-up-heights`) und 1/16 bis 5 Bloecke hinunter
+  (`step-down-heights`), **jeder Belagswechsel** als vollstaendige 10x10-Matrix
+  (`surface-transition`, deckt "von Grasweg auf Vollblock" in beide Richtungen ab), **Rampen**
+  aus ganzen Bloecken von 45 Grad bis 1 auf 8 in beide Richtungen (`slope-up`/`slope-down`)
+  und **54 echte Bloecke einzeln ueberfahren** (`drive-over`: Kuchen, Bett, Truhe, Kessel,
+  Amboss, Zaun, Schiene, Druckplatte, Weizen, Seerose, Pulverschnee, Spinnennetz, Kaktus …).
+  Wer eine Stelle im Spiel meldet, an der das Auto haengt: erst `--only` auf den passenden
+  Sweep, dann den Belag der Fundstelle in die Palette in `SelfTest.java` aufnehmen.
 - Nicht automatisierbar und weiterhin manuell: echte Spielereingaben (Mauslenkung, Actionbar),
   Modell-Optik (Pitch/Roll-Vorzeichen sind headless unsichtbar), Client-Autocomplete, Resourcepack.
 
