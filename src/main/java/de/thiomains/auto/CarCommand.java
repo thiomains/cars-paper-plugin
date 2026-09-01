@@ -369,7 +369,7 @@ public final class CarCommand implements BasicCommand {
                 filter = args[i].toLowerCase();
             }
         }
-        SelfTest selfTest = new SelfTest(plugin, carManager, carConfig, verbose, filter);
+        SelfTest selfTest = new SelfTest(plugin, carManager, carConfig, prefs, verbose, filter);
         if (!selfTest.start()) {
             sender.sendMessage(Component.text("Es läuft bereits ein Selftest.", NamedTextColor.RED));
         }

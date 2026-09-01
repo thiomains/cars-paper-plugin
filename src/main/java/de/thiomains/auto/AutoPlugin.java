@@ -7,7 +7,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public final class AutoPlugin extends JavaPlugin {
 
-    private static final int CONFIG_VERSION = 8;
+    /** Bei jeder Aenderung an Keys oder Einheiten hochzaehlen — muss zum config-version
+     *  in der ausgelieferten config.yml passen (der Selftest prueft genau das). */
+    static final int CONFIG_VERSION = 8;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;
@@ -86,24 +88,36 @@ public final class AutoPlugin extends JavaPlugin {
         saveResource("config.yml", false);
         reloadConfig();
         if (old != null && stored >= 3) {
-            int carried = 0;
-            for (String key : CarConfig.NUMBER_KEYS) {
-                if (old.isSet(key)) {
-                    getConfig().set(key, old.getDouble(key));
-                    carried++;
-                }
-            }
-            for (String key : CarConfig.BOOL_KEYS) {
-                if (old.isSet(key)) {
-                    getConfig().set(key, old.getBoolean(key));
-                    carried++;
-                }
-            }
+            int carried = carryOver(old, getConfig());
             if (carried > 0) {
                 saveConfig();
                 getLogger().info(carried + " Einstellungen aus der alten Konfiguration übernommen.");
             }
         }
+    }
+
+    /**
+     * Übernimmt jeden Key, den alte und neue Konfiguration gemeinsam kennen, mit dem
+     * gesetzten Typ. Unbekannte Keys der alten Datei fallen weg — sie sind entweder
+     * umbenannt oder entfallen. Rückgabe: Anzahl der übernommenen Werte.
+     * Herausgezogen, damit der Selftest die Migration ohne echte Dateien prüfen kann.
+     */
+    static int carryOver(org.bukkit.configuration.ConfigurationSection old,
+                         org.bukkit.configuration.ConfigurationSection target) {
+        int carried = 0;
+        for (String key : CarConfig.NUMBER_KEYS) {
+            if (old.isSet(key)) {
+                target.set(key, old.getDouble(key));
+                carried++;
+            }
+        }
+        for (String key : CarConfig.BOOL_KEYS) {
+            if (old.isSet(key)) {
+                target.set(key, old.getBoolean(key));
+                carried++;
+            }
+        }
+        return carried;
     }
 
     @Override

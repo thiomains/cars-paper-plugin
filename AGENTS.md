@@ -78,6 +78,11 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
      bleiben 3/8, 5/8 und 7/8 je Block stecken, 1/8, 1/4, 1/2 und 3/4 kommen durch. Welche
      Neigung haengt, entscheidet die zufaellige Lage der Oberkanten zu den Zellgrenzen — die
      Liste im Code ist bewusst der IST-Stand.
+- **Aktuell offen (`knownFail`), unabhaengige Wurzel:** `config-registry/config-obergrenzen` —
+  **13 der 22 Zahlen-Keys haben keine Obergrenze** (`clampHumanValue` faellt fuer sie auf
+  `Math.max(0, wert)` zurueck). `/car config max-speed 100000` wird angenommen und legt den
+  Server lahm: `resolveStep` tastet die Strecke in 0,4-Bloecke-Schritten ab, das sind dann rund
+  3500 Substeps mal neun Rasterpunkte mal zwei Achsen — pro Tick und Auto.
 - **Aktuell offen (`knownFail`), unabhaengige Wurzel:** `environment/wasser-sinken` — das Auto
   sinkt mit rund **30 km/h statt der konfigurierten 9** (`max-sink-speed`). `applyGravity`
   addiert je Tick erst die volle Erdbeschleunigung und daempft danach nur 15 % des Ueberschusses
@@ -99,6 +104,16 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   Schlupfaufbau auf Stein gegen Eis, Standfest-Hartschnapp gegen Ausrollen auf Eis, der
   Karosserie-Dreh aus einem aussermittigen Wandtreffer, das Herausfahren aus der Geometrie
   (`embedded`) und Wandkontakt bei vollen 162 km/h ohne Tunneling.
+- **Konfiguration, Migration und Entities** deckt der Sweep `config-registry` ab (reine
+  Funktionspruefungen, kostenlos im Lauf): jeder Key hat einen Default in der ausgelieferten
+  `config.yml` und umgekehrt kennt jede Liste jeden Key; `config-version` in der Datei stimmt
+  mit `AutoPlugin.CONFIG_VERSION` ueberein; jede Einheitenumrechnung (km/h, m/s², %, Luftwiderstand)
+  wird aus dem Rohwert nachgerechnet; `AutoPlugin.carryOver` uebernimmt bekannte Keys und
+  verwirft unbekannte; `PlayerPrefs` migriert `reverse_invert_mouse` und liefert die Defaults;
+  das Autocomplete zeigt nie `sim`/`selftest`; ein Auto besteht aus drei markierten Entities,
+  `ensureParts` baut ein entferntes Modell nach und `removeCar` laesst nichts zurueck.
+  Fuer die letzten beiden Punkte nehmen `PlayerPrefs` und `SelfTest` ihre Datei bzw. ihre
+  Abhaengigkeiten injiziert entgegen — die echte `prefs.yml` eines Servers wird nie angefasst.
 - **Ein Szenario darf die Physik-Konfiguration umstellen** (`crash-restitution-null` tut das):
   `startNext()` ruft vor jedem Szenario `config.reload()`, damit sich das nicht fortpflanzt —
   auch dann nicht, wenn ein Lauf abbricht und die Pruefung nie laeuft. In einem Sweep geht das

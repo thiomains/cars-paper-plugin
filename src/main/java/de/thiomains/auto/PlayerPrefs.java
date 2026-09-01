@@ -36,8 +36,14 @@ public final class PlayerPrefs {
     private final Map<UUID, Prefs> store = new HashMap<>();
 
     public PlayerPrefs(JavaPlugin plugin) {
+        this(plugin, new File(plugin.getDataFolder(), "prefs.yml"));
+    }
+
+    /** Mit eigener Datei — der Selftest prueft die Migration so, ohne die echte prefs.yml
+     *  eines laufenden Servers anzufassen. */
+    PlayerPrefs(JavaPlugin plugin, File file) {
         this.plugin = plugin;
-        this.file = new File(plugin.getDataFolder(), "prefs.yml");
+        this.file = file;
         load();
     }
 

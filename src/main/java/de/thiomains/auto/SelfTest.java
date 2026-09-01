@@ -1,23 +1,28 @@
 package de.thiomains.auto;
 
+import io.papermc.paper.command.brigadier.CommandSourceStack;
 import org.bukkit.Bukkit;
 import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.data.type.Snow;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
-import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.BoundingBox;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -55,9 +60,10 @@ public final class SelfTest extends BukkitRunnable {
     private static final int GAP_MIN_AIR_TICKS = 2;
     private static final double MICRO_STEP_MIN_TRAVEL = 8.0;
 
-    private final Plugin plugin;
+    private final JavaPlugin plugin;
     private final CarManager carManager;
     private final CarConfig config;
+    private final PlayerPrefs prefs;
     private final boolean verbose;
     private final String filter;
 
@@ -98,10 +104,12 @@ public final class SelfTest extends BukkitRunnable {
     private int failed;
     private int knownFailed;
 
-    public SelfTest(Plugin plugin, CarManager carManager, CarConfig config, boolean verbose, String filter) {
+    public SelfTest(JavaPlugin plugin, CarManager carManager, CarConfig config, PlayerPrefs prefs,
+                    boolean verbose, String filter) {
         this.plugin = plugin;
         this.carManager = carManager;
         this.config = config;
+        this.prefs = prefs;
         this.verbose = verbose;
         this.filter = filter;
         defineScenarios();
@@ -727,6 +735,7 @@ public final class SelfTest extends BukkitRunnable {
         driverInputs();
         environment();
         gripAndCrash();
+        configAndRegistry();
         stepUpHeights();
         stepUpFromSurfaces();
         stepDownHeights();
@@ -1895,6 +1904,405 @@ public final class SelfTest extends BukkitRunnable {
         if (Math.abs(actual - expected) > 1.0e-9) {
             errors.add(fmt("%s: %.2f statt %.2f", material.name(), actual, expected));
         }
+    }
+
+
+    // ────────────────────────── Konfiguration, Migration, Entities ──────────────────────────
+    //
+    // Alles reine Funktionspruefungen ohne Fahrt: billig im Lauf, aber genau die Sorte
+    // Fehler, die man sonst erst auf dem Server bemerkt — ein Key ohne Default, eine
+    // verrutschte Einheit, eine Migration, die still nichts uebernimmt.
+
+    /** Umrechnungsregeln der config.yml, wie sie CarConfig.reload() anwendet. */
+    private enum Unit { KMH, MS2, PROZENT, DRAG, ROH }
+
+    private static final Map<String, Unit> UNITS = Map.ofEntries(
+            Map.entry("max-speed", Unit.KMH),
+            Map.entry("max-reverse-speed", Unit.KMH),
+            Map.entry("max-fall-speed", Unit.KMH),
+            Map.entry("max-sink-speed", Unit.KMH),
+            Map.entry("turn-min-speed", Unit.KMH),
+            Map.entry("acceleration", Unit.MS2),
+            Map.entry("reverse-acceleration", Unit.MS2),
+            Map.entry("brake-deceleration", Unit.MS2),
+            Map.entry("handbrake-deceleration", Unit.MS2),
+            Map.entry("engine-braking", Unit.MS2),
+            Map.entry("max-lateral-grip", Unit.MS2),
+            Map.entry("downhill-assist", Unit.MS2),
+            Map.entry("drag", Unit.DRAG),
+            Map.entry("slope-resistance", Unit.PROZENT),
+            Map.entry("crash-restitution", Unit.PROZENT),
+            Map.entry("crash-spin", Unit.PROZENT),
+            Map.entry("grip-concrete", Unit.PROZENT),
+            Map.entry("grip-grass", Unit.PROZENT),
+            Map.entry("grip-ice", Unit.PROZENT),
+            Map.entry("grip-default", Unit.PROZENT),
+            Map.entry("handbrake-grip", Unit.PROZENT),
+            Map.entry("turn-curvature", Unit.ROH));
+
+    private void configAndRegistry() {
+        Sweep sweep = sweep("config-registry", INPUT_CLEAR);
+
+        // Ein Key ohne Default in der ausgelieferten config.yml liest sich still als 0 —
+        // und ein Key in der Datei, den keine Liste kennt, wird bei der Migration verworfen.
+        sweep.run("config-keys", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            YamlConfiguration shipped = shippedConfig();
+            if (shipped == null) {
+                return Result.fail("config.yml liegt nicht im Jar");
+            }
+            List<String> errors = new ArrayList<>();
+            List<String> known = new ArrayList<>(CarConfig.NUMBER_KEYS);
+            known.addAll(CarConfig.BOOL_KEYS);
+            for (String key : known) {
+                if (!shipped.isSet(key)) {
+                    errors.add(key + " fehlt in der ausgelieferten config.yml");
+                }
+            }
+            for (String key : shipped.getKeys(false)) {
+                if (!key.equals("config-version") && !known.contains(key)) {
+                    errors.add(key + " steht in der config.yml, aber in keiner Key-Liste");
+                }
+            }
+            int version = shipped.getInt("config-version", -1);
+            if (version != AutoPlugin.CONFIG_VERSION) {
+                errors.add("config-version " + version + " in der Datei, aber CONFIG_VERSION "
+                        + AutoPlugin.CONFIG_VERSION + " im Code");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass(known.size() + " Keys vollstaendig, config-version " + version
+                    + " stimmt mit dem Code ueberein");
+        });
+
+        // Die Umrechnung menschenlesbar -> Bloecke/Tick. Erwartet wird aus dem ROHWERT der
+        // laufenden Konfiguration gerechnet, nicht gegen feste Zahlen — so bleibt der Test
+        // auch bei angepasster config.yml gueltig.
+        sweep.run("config-einheiten", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            List<String> errors = new ArrayList<>();
+            for (String key : CarConfig.NUMBER_KEYS) {
+                Unit unit = UNITS.get(key);
+                if (unit == null) {
+                    errors.add(key + " hat keine hinterlegte Einheit — Test nachziehen");
+                    continue;
+                }
+                double human = CarConfig.clampHumanValue(key, plugin.getConfig().getDouble(key));
+                double expected = switch (unit) {
+                    case KMH -> human / 72.0;
+                    case MS2 -> human / 400.0;
+                    case PROZENT -> human / 100.0;
+                    case DRAG -> 1.0 - Math.pow(1.0 - human / 100.0, 1.0 / 20.0);
+                    case ROH -> human;
+                };
+                double actual = configValue(key);
+                if (Math.abs(actual - expected) > 1.0e-9) {
+                    errors.add(fmt("%s: %.8f statt %.8f (aus %.2f)", key, actual, expected, human));
+                }
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass(CarConfig.NUMBER_KEYS.size() + " Umrechnungen korrekt");
+        });
+
+        // Jeder Zahlen-Key braucht eine Obergrenze. Ohne die nimmt /car config Werte an, die
+        // den Server lahmlegen: resolveStep tastet die Strecke in 0,4-Bloecke-Schritten ab,
+        // also kostet max-speed 100000 km/h rund 3500 Substeps mal neun Rasterpunkte mal zwei
+        // Achsen — pro Tick und Auto.
+        sweep.run("config-obergrenzen", true, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            List<String> ohne = new ArrayList<>();
+            for (String key : CarConfig.NUMBER_KEYS) {
+                if (CarConfig.clampHumanValue(key, 1.0e6) >= 1.0e6) {
+                    ohne.add(key);
+                }
+            }
+            if (!ohne.isEmpty()) {
+                return Result.fail(fmt("%d von %d Keys ohne Obergrenze: %s", ohne.size(),
+                        CarConfig.NUMBER_KEYS.size(), String.join(", ", ohne)));
+            }
+            return Result.pass("alle Zahlen-Keys sind nach oben begrenzt");
+        });
+
+        // Migration: bekannte Keys werden uebernommen, unbekannte fallen weg.
+        sweep.run("config-migration", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            YamlConfiguration old = new YamlConfiguration();
+            old.set("max-speed", 99.0);
+            old.set("grip-ice", 42.0);
+            old.set("understeer-sound", false);
+            old.set("uralter-key", 7.0);
+            YamlConfiguration target = new YamlConfiguration();
+            target.set("max-speed", 162.0);
+            target.set("grip-ice", 15.0);
+            target.set("understeer-sound", true);
+            int carried = AutoPlugin.carryOver(old, target);
+            List<String> errors = new ArrayList<>();
+            if (carried != 3) {
+                errors.add("uebernommen: " + carried + " statt 3");
+            }
+            if (target.getDouble("max-speed") != 99.0) {
+                errors.add("max-speed nicht uebernommen: " + target.getDouble("max-speed"));
+            }
+            if (target.getDouble("grip-ice") != 42.0) {
+                errors.add("grip-ice nicht uebernommen: " + target.getDouble("grip-ice"));
+            }
+            if (target.getBoolean("understeer-sound")) {
+                errors.add("Boolean-Key nicht uebernommen");
+            }
+            if (target.isSet("uralter-key")) {
+                errors.add("unbekannter Key wurde mitgeschleppt");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("3 bekannte Keys uebernommen, unbekannter verworfen");
+        });
+
+        // Spieler-Prefs: der alte Key reverse_invert_mouse muss still migriert werden.
+        sweep.run("prefs-migration", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            java.io.File file = new java.io.File(plugin.getDataFolder(), "prefs-selftest.yml");
+            UUID alt = UUID.fromString("11111111-1111-1111-1111-111111111111");
+            UUID neu = UUID.fromString("22222222-2222-2222-2222-222222222222");
+            UUID leer = UUID.fromString("33333333-3333-3333-3333-333333333333");
+            try {
+                YamlConfiguration yml = new YamlConfiguration();
+                yml.set(alt + ".mouse_steer", false);
+                yml.set(alt + ".reverse_invert_mouse", false);
+                yml.set(neu + ".reverse_invert", false);
+                yml.set(neu + ".reverse_invert_mouse", true);
+                yml.set(leer + ".mouse_steer", true);
+                yml.set("kein-uuid.mouse_steer", true);
+                yml.save(file);
+                PlayerPrefs loaded = new PlayerPrefs(plugin, file);
+                List<String> errors = new ArrayList<>();
+                if (loaded.reverseInvert(alt)) {
+                    errors.add("alter Key reverse_invert_mouse wurde nicht migriert");
+                }
+                if (loaded.mouseSteer(alt)) {
+                    errors.add("mouse_steer nicht gelesen");
+                }
+                if (loaded.reverseInvert(neu)) {
+                    errors.add("neuer Key verliert gegen den alten");
+                }
+                if (!loaded.actionbar(leer) || !loaded.actionbarSpeed(leer)) {
+                    errors.add("Actionbar-Defaults nicht an");
+                }
+                if (loaded.actionbarGrip(leer)) {
+                    errors.add("Grip-Balken ist standardmaessig aus, war aber an");
+                }
+                if (!loaded.mouseSteer(UUID.randomUUID())) {
+                    errors.add("unbekannter Spieler bekommt nicht die Defaults");
+                }
+                if (!errors.isEmpty()) {
+                    return Result.fail(String.join(" | ", errors));
+                }
+                return Result.pass("Migration, Defaults und ungueltiger Eintrag korrekt");
+            } catch (IOException e) {
+                return Result.fail("prefs-Testdatei nicht schreibbar: " + e.getMessage());
+            } finally {
+                file.delete();
+            }
+        });
+
+        // Autocomplete: zeigt nur, was der Sender ausfuehren darf, und niemals die
+        // Konsolen-Werkzeuge sim/selftest.
+        sweep.run("autocomplete", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            CarCommand command = new CarCommand(plugin, carManager, config, prefs);
+            CommandSourceStack stack = consoleSource();
+            List<String> errors = new ArrayList<>();
+            List<String> subs = List.copyOf(command.suggest(stack, new String[0]));
+            for (String expected : List.of("help", "prefs", "give", "config")) {
+                if (!subs.contains(expected)) {
+                    errors.add(expected + " fehlt im Autocomplete");
+                }
+            }
+            for (String forbidden : List.of("sim", "selftest")) {
+                if (subs.contains(forbidden)) {
+                    errors.add(forbidden + " taucht im Autocomplete auf");
+                }
+            }
+            if (!List.copyOf(command.suggest(stack, new String[]{"con"})).equals(List.of("config"))) {
+                errors.add("Praefix 'con' filtert nicht auf config");
+            }
+            List<String> keys = List.copyOf(command.suggest(stack, new String[]{"config", ""}));
+            if (keys.size() != CarPermissions.configKeys().size()) {
+                errors.add("config-Keys: " + keys.size() + " statt " + CarPermissions.configKeys().size());
+            }
+            List<String> bool = List.copyOf(command.suggest(stack,
+                    new String[]{"config", "understeer-sound", ""}));
+            if (!bool.equals(List.of("true", "false"))) {
+                errors.add("Boolean-Key schlaegt " + bool + " vor");
+            }
+            List<String> value = List.copyOf(command.suggest(stack,
+                    new String[]{"config", "max-speed", ""}));
+            if (value.size() != 1) {
+                errors.add("Zahlen-Key schlaegt " + value + " statt des aktuellen Werts vor");
+            }
+            List<String> prefKeys = List.copyOf(command.suggest(stack, new String[]{"prefs", ""}));
+            if (!prefKeys.contains("mouse_steer") || !prefKeys.contains("actionbar_grip")) {
+                errors.add("prefs-Keys unvollstaendig: " + prefKeys);
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Unterbefehle, Keys und Werte korrekt vorgeschlagen");
+        });
+
+        // Ein Auto ist drei Entities. Aufbau, Markierung, Nachbau nach Fremdeingriff und
+        // rueckstandsfreies Entfernen — sonst bleiben Geister-Displays in der Welt.
+        sweep.run("auto-teile", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+            track(lane, -4, 4, GROUND_Y - 1, Material.STONE);
+        }, run -> {
+            Lane l = run.lane();
+            int before = carManager.size();
+            Car car = carManager.spawnCar(new Location(l.world(), l.baseX() + 0.5, l.groundY(),
+                    l.baseZ() + 0.5, 0f, 0f), 0f);
+            List<String> errors = new ArrayList<>();
+            if (!car.getBase().getPersistentDataContainer().has(carManager.getCarKey())) {
+                errors.add("Basis traegt den Auto-Marker nicht");
+            }
+            if (!carManager.isCarPart(car.getModel()) || !carManager.isCarPart(car.getHitbox())) {
+                errors.add("Modell oder Hitbox traegt den Teile-Marker nicht");
+            }
+            if (!car.getBase().getPassengers().contains(car.getModel())
+                    || !car.getBase().getPassengers().contains(car.getHitbox())) {
+                errors.add("Teile haengen nicht als Passagiere an der Basis");
+            }
+            if (carManager.getCarByPart(car.getModel()) != car
+                    || carManager.getCarByPart(car.getHitbox()) != car) {
+                errors.add("Teil laesst sich nicht auf sein Auto zurueckfuehren");
+            }
+            if (carManager.size() != before + 1) {
+                errors.add("Auto nicht registriert");
+            }
+
+            // Fremdeingriff: Modell entfernt -> ensureParts muss es nachbauen
+            var altesModell = car.getModel();
+            altesModell.remove();
+            carManager.ensureParts(car);
+            if (car.getModel() == altesModell || !car.getModel().isValid()) {
+                errors.add("ensureParts baut das entfernte Modell nicht nach");
+            }
+            if (!car.getBase().getPassengers().contains(car.getModel())) {
+                errors.add("nachgebautes Modell haengt nicht an der Basis");
+            }
+
+            // Doppelte Registrierung darf kein zweites Auto erzeugen
+            carManager.reRegister(car.getBase());
+            if (carManager.size() != before + 1) {
+                errors.add("reRegister legt ein zweites Auto an");
+            }
+
+            var basis = car.getBase();
+            var modell = car.getModel();
+            var hitbox = car.getHitbox();
+            carManager.removeCar(car, false);
+            if (basis.isValid() || modell.isValid() || hitbox.isValid()) {
+                errors.add("nach removeCar bleiben Entities zurueck: basis=" + basis.isValid()
+                        + " modell=" + modell.isValid() + " hitbox=" + hitbox.isValid());
+            }
+            if (carManager.getCarByBase(basis.getUniqueId()) != null
+                    || carManager.size() != before) {
+                errors.add("Auto bleibt nach removeCar registriert");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Aufbau, Marker, Nachbau und Entfernen rueckstandsfrei");
+        });
+
+        sweep.done();
+    }
+
+    /** Die config.yml, wie sie im Jar ausgeliefert wird (nicht die des Servers). */
+    private YamlConfiguration shippedConfig() {
+        try (java.io.InputStream in = plugin.getResource("config.yml")) {
+            if (in == null) {
+                return null;
+            }
+            return YamlConfiguration.loadConfiguration(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Der wirksame (bereits umgerechnete) Wert eines Config-Keys. */
+    private double configValue(String key) {
+        return switch (key) {
+            case "max-speed" -> config.maxSpeed;
+            case "max-reverse-speed" -> config.maxReverseSpeed;
+            case "max-fall-speed" -> config.maxFallSpeed;
+            case "max-sink-speed" -> config.maxSinkSpeed;
+            case "turn-min-speed" -> config.turnMinSpeed;
+            case "acceleration" -> config.acceleration;
+            case "reverse-acceleration" -> config.reverseAcceleration;
+            case "brake-deceleration" -> config.brakeDeceleration;
+            case "handbrake-deceleration" -> config.handbrakeDeceleration;
+            case "engine-braking" -> config.engineBraking;
+            case "max-lateral-grip" -> config.maxLatGrip;
+            case "downhill-assist" -> config.downhillAssist;
+            case "drag" -> config.drag;
+            case "slope-resistance" -> config.slopeResistance;
+            case "crash-restitution" -> config.crashRestitution;
+            case "crash-spin" -> config.crashSpin;
+            case "grip-concrete" -> config.gripConcrete;
+            case "grip-grass" -> config.gripGrass;
+            case "grip-ice" -> config.gripIce;
+            case "grip-default" -> config.gripDefault;
+            case "handbrake-grip" -> config.handbrakeGrip;
+            case "turn-curvature" -> config.turnCurvature;
+            default -> Double.NaN;
+        };
+    }
+
+    /** Konsolen-Quelle fuer das Autocomplete: die Konsole darf alles und ist headless da. */
+    private CommandSourceStack consoleSource() {
+        World world = Bukkit.getWorlds().get(0);
+        CommandSender console = Bukkit.getConsoleSender();
+        return new CommandSourceStack() {
+            @Override
+            public Location getLocation() {
+                return new Location(world, 0, GROUND_Y, 0);
+            }
+
+            @Override
+            public CommandSender getSender() {
+                return console;
+            }
+
+            @Override
+            public org.bukkit.entity.Entity getExecutor() {
+                return null;
+            }
+
+            /** Der Selftest laesst niemanden im Namen eines anderen oder anderswo tippen. */
+            @Override
+            public CommandSourceStack withExecutor(org.bukkit.entity.Entity executor) {
+                return this;
+            }
+
+            @Override
+            public CommandSourceStack withLocation(Location location) {
+                return this;
+            }
+
+            /** Die Konsole ist weder Entity noch Spieler; das Autocomplete fragt danach nicht. */
+            @Override
+            public org.bukkit.entity.Entity getEntityOrThrow() {
+                throw new UnsupportedOperationException("Konsole");
+            }
+
+            @Override
+            public org.bukkit.entity.Player getPlayerOrThrow() {
+                throw new UnsupportedOperationException("Konsole");
+            }
+        };
     }
 
     // ────────────────────────────── Sweeps ──────────────────────────────
