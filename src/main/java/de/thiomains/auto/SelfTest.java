@@ -2143,7 +2143,9 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("grip-ice", Unit.PROZENT),
             Map.entry("grip-default", Unit.PROZENT),
             Map.entry("handbrake-grip", Unit.PROZENT),
-            Map.entry("turn-curvature", Unit.ROH));
+            Map.entry("turn-curvature", Unit.ROH),
+            Map.entry("horn-pitch", Unit.ROH),
+            Map.entry("horn-range", Unit.ROH));
 
     private void configAndRegistry() {
         Sweep sweep = sweep("config-registry", INPUT_CLEAR);
@@ -2159,6 +2161,7 @@ public final class SelfTest extends BukkitRunnable {
             List<String> errors = new ArrayList<>();
             List<String> known = new ArrayList<>(CarConfig.NUMBER_KEYS);
             known.addAll(CarConfig.BOOL_KEYS);
+            known.addAll(CarConfig.STRING_KEYS);
             for (String key : known) {
                 if (!shipped.isSet(key)) {
                     errors.add(key + " fehlt in der ausgelieferten config.yml");
@@ -2202,6 +2205,12 @@ public final class SelfTest extends BukkitRunnable {
                     case ROH -> human;
                 };
                 double actual = configValue(key);
+                if (Double.isNaN(actual)) {
+                    // NaN vergleicht sich mit allem als "ungleich false" — ohne diese Zeile
+                    // faellt ein in configValue vergessener Key still durch den Test.
+                    errors.add(key + " fehlt in configValue — Test nachziehen");
+                    continue;
+                }
                 if (Math.abs(actual - expected) > 1.0e-9) {
                     errors.add(fmt("%s: %.8f statt %.8f (aus %.2f)", key, actual, expected, human));
                 }
@@ -2229,6 +2238,38 @@ public final class SelfTest extends BukkitRunnable {
                         CarConfig.NUMBER_KEYS.size(), String.join(", ", ohne)));
             }
             return Result.pass("alle Zahlen-Keys sind nach oben begrenzt");
+        });
+
+        // Hupe: der ausgelieferte Sound-Name muss in der Registry existieren — ein Tippfehler
+        // im Default waere sonst erst im Spiel zu hoeren. Umgekehrt darf Unsinn nicht durchgehen.
+        sweep.run("config-hupe-sound", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            List<String> errors = new ArrayList<>();
+            String shipped = plugin.getConfig().getString("horn-sound");
+            if (CarConfig.lookupSound(shipped) == null) {
+                errors.add("ausgelieferter horn-sound loest nicht auf: " + shipped);
+            }
+            if (config.hornSound == null) {
+                errors.add("hornSound ist nach reload() null");
+            }
+            if (CarConfig.lookupSound("minecraft:kein.sound.dieser.welt") != null) {
+                errors.add("unbekannter Sound-Name wurde akzeptiert");
+            }
+            if (CarConfig.lookupSound("kein gueltiger key!") != null) {
+                errors.add("ungueltiger Registry-Key wurde akzeptiert");
+            }
+            if (CarConfig.lookupSound(null) != null || CarConfig.lookupSound("  ") != null) {
+                errors.add("leerer Name wurde akzeptiert");
+            }
+            // Ohne Namensraum geschrieben muss derselbe Sound herauskommen.
+            if (CarConfig.lookupSound("block.note_block.bass")
+                    != CarConfig.lookupSound("minecraft:block.note_block.bass")) {
+                errors.add("Name ohne Namensraum loest anders auf");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("horn-sound loest auf: " + CarConfig.soundName(config.hornSound));
         });
 
         // Migration: bekannte Keys werden uebernommen, umbenannte wandern mit, unbekannte fallen weg.
@@ -2491,6 +2532,9 @@ public final class SelfTest extends BukkitRunnable {
             case "grip-default" -> config.gripDefault;
             case "handbrake-grip" -> config.handbrakeGrip;
             case "turn-curvature" -> config.turnCurvature;
+            case "tip-acceleration" -> config.tipAcceleration;
+            case "horn-pitch" -> config.hornPitch;
+            case "horn-range" -> config.hornRange;
             default -> Double.NaN;
         };
     }

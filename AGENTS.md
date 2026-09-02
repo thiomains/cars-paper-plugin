@@ -54,7 +54,7 @@ Maschinenspezifische Pfade gehoeren in `scripts/env.local` (gitignored, `MVN=`/`
   Distanzmessung ad absurdum. Zusaetzlich bricht die `minY`-Sicherung so einen Lauf ab.
 - **Sweeps** fassen viele kurze Faelle unter einem Namen zusammen und fahren sie zu je
   `BATCH` (12) Stueck **gleichzeitig** auf eigenen Baehnen — eine Matrix ueber alle Stufenhoehen,
-  Belagswechsel und Hindernisse waere sonst nicht in vertretbarer Zeit zu fahren (295 Faelle
+  Belagswechsel und Hindernisse waere sonst nicht in vertretbarer Zeit zu fahren (296 Faelle
   in rund vier Minuten). Die Baehnen werden per `addPluginChunkTicket` geladen gehalten:
   ohne Spieler in der Naehe entlaedt der Server sie sonst und `DriveTask` ueberspringt das Auto.
   Geladene Chunks **ticken** aber auch — Ackerland trocknet zu Dirt aus, Schnee schmilzt, Kaktus
