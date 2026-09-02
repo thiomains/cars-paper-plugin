@@ -4,7 +4,7 @@ Fahrbare Autos für Minecraft als Paper-Plugin — mit einer Fahrphysik, die auf
 echten Geschwindigkeitsvektor beruht: Grip pro Rad, Traktionskreis, Schlupf, Driften,
 Stufen, Steigungen und Crashs mit Drehimpuls.
 
-- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.2.0**
+- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.4.0**
 - **Server:** Paper, `api-version: '26.2'` (Minecraft 26.2)
 - **Java:** 25
 - **Build:** Maven, kein Testframework, kein CI
@@ -100,7 +100,7 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Untergrund | `grip-concrete`, `grip-grass`, `grip-ice`, `grip-default` |
 | Gelände | `downhill-assist`, `slope-resistance` |
 | Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
-| Sonstiges | `understeer-sound`, `debug` |
+| Sonstiges | `understeer-sound`, `debug`, `debug-wheels` |
 
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
 Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere Default.
@@ -113,8 +113,8 @@ Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere
   Unterboden — die Stoßstange hebt es nicht an. Gegen Wände blockiert dagegen die volle
   Karosserie, die Nase trifft also vor den Rädern. Auf einer Treppe steigt das Auto damit eine
   Stufe pro Reihe, statt auf der Stoßstange zu reiten.
-- **Grip nur am Boden:** Bodenkontakt und Grip stammen aus vier Rad-Samples (±0,9 längs,
-  ±0,7 quer), gemessen gegen den Boden unter der Fahrzeugmitte — auf einer Treppe zählt die
+- **Grip nur am Boden:** Bodenkontakt und Grip stammen aus vier Rad-Samples (±0,7 längs und
+  quer, also Radstand und Spurweite 1,4), gemessen gegen den Boden unter der Fahrzeugmitte — auf einer Treppe zählt die
   tief stehende Hinterachse trotzdem mit. Die beiden Räder einer Achse sind verbunden: hängt
   eines mehr als einen halben Block unter dem anderen, hebt es ab. Und unter drei tragenden
   Rädern **kippt** das Auto zur unbelasteten Seite ab, statt auf der Kante zu balancieren.
