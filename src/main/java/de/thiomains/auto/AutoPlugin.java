@@ -9,7 +9,7 @@ public final class AutoPlugin extends JavaPlugin {
 
     /** Bei jeder Aenderung an Keys oder Einheiten hochzaehlen — muss zum config-version
      *  in der ausgelieferten config.yml passen (der Selftest prueft genau das). */
-    static final int CONFIG_VERSION = 10;
+    static final int CONFIG_VERSION = 11;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;
@@ -96,28 +96,55 @@ public final class AutoPlugin extends JavaPlugin {
         }
     }
 
+    /** Umbenannte Keys: alter Name -> neuer Name. Ohne diese Tabelle faellt ein umbenannter
+     *  Key bei der Migration weg und der Nutzer steht wieder auf dem Default. */
+    private static final java.util.Map<String, String> RENAMED_KEYS = java.util.Map.of(
+            "understeer-sound", "understeer-sound-enabled");
+
     /**
      * Übernimmt jeden Key, den alte und neue Konfiguration gemeinsam kennen, mit dem
-     * gesetzten Typ. Unbekannte Keys der alten Datei fallen weg — sie sind entweder
-     * umbenannt oder entfallen. Rückgabe: Anzahl der übernommenen Werte.
+     * gesetzten Typ; umbenannte Keys wandern über RENAMED_KEYS mit. Sonstige unbekannte Keys
+     * der alten Datei fallen weg — sie sind entfallen. Rückgabe: Anzahl der übernommenen Werte.
      * Herausgezogen, damit der Selftest die Migration ohne echte Dateien prüfen kann.
      */
     static int carryOver(org.bukkit.configuration.ConfigurationSection old,
                          org.bukkit.configuration.ConfigurationSection target) {
         int carried = 0;
         for (String key : CarConfig.NUMBER_KEYS) {
-            if (old.isSet(key)) {
-                target.set(key, old.getDouble(key));
+            String from = sourceKey(old, key);
+            if (from != null) {
+                target.set(key, old.getDouble(from));
                 carried++;
             }
         }
         for (String key : CarConfig.BOOL_KEYS) {
-            if (old.isSet(key)) {
-                target.set(key, old.getBoolean(key));
+            String from = sourceKey(old, key);
+            if (from != null) {
+                target.set(key, old.getBoolean(from));
+                carried++;
+            }
+        }
+        for (String key : CarConfig.STRING_KEYS) {
+            String from = sourceKey(old, key);
+            if (from != null) {
+                target.set(key, old.getString(from));
                 carried++;
             }
         }
         return carried;
+    }
+
+    /** Unter welchem Namen der Wert in der alten Datei steht (aktueller Name oder alter), sonst null. */
+    private static String sourceKey(org.bukkit.configuration.ConfigurationSection old, String key) {
+        if (old.isSet(key)) {
+            return key;
+        }
+        for (java.util.Map.Entry<String, String> renamed : RENAMED_KEYS.entrySet()) {
+            if (renamed.getValue().equals(key) && old.isSet(renamed.getKey())) {
+                return renamed.getKey();
+            }
+        }
+        return null;
     }
 
     @Override

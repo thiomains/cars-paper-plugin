@@ -10,7 +10,7 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 10
+config-version: 11
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 170.0
@@ -61,8 +61,16 @@ grip-ice: 10.0
 grip-default: 70.0
 # Rest-Grip in Prozent während die Handbremse gezogen ist (klein = driftfreudig)
 handbrake-grip: 50.0
-# Quietsch-Sound bei Untersteuern/Schlupf
-understeer-sound: false
+# Quietsch-Sound bei Untersteuern/Schlupf (hiess bis config-version 10 understeer-sound)
+understeer-sound-enabled: false
+# Hupe: Rechtsklick, waehrend man im Auto sitzt.
+# Sound-Name aus der Vanilla-Sound-Registry; unbekannte Namen werden mit einer Warnung
+# im Log auf den Standard zurueckgesetzt.
+horn-sound: minecraft:block.note_block.didgeridoo
+# Tonhoehe der Hupe (0.0-2.0; kleiner = tiefer)
+horn-pitch: 0.5
+# Hoerweite der Hupe in Bloecken (Minecraft rechnet sie in Lautstaerke um: Weite / 16)
+horn-range: 80.0
 # Debug-Logging (Fahrzustand, Ein-/Aussteigen) in die Konsole
 debug: false
 # Debug-Anzeige der Rad-Aufstandspunkte als Partikel: gruen = Rad traegt, rot = Rad haengt,

@@ -1,9 +1,13 @@
 package de.thiomains.auto;
 
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
+import org.bukkit.Sound;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Physik-Werte, intern in der Tick-Einheit (Blöcke/Tick) gehalten. Die config.yml
@@ -18,9 +22,17 @@ public final class CarConfig {
             "brake-deceleration", "handbrake-deceleration", "engine-braking", "drag", "max-lateral-grip",
             "turn-curvature", "turn-min-speed", "downhill-assist", "slope-resistance",
             "crash-restitution", "crash-spin", "tip-acceleration", "max-sink-speed",
-            "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip"
+            "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
+            "horn-pitch", "horn-range"
     );
-    public static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug", "debug-wheels");
+    public static final List<String> BOOL_KEYS = List.of("understeer-sound-enabled", "debug", "debug-wheels");
+    /** Keys mit freiem Text als Wert. Dritte Kategorie neben Zahlen und Schaltern: Anzeige,
+     *  Autocomplete, Permission-Nodes und Migration lesen alle drei Listen. */
+    public static final List<String> STRING_KEYS = List.of("horn-sound");
+
+    /** Fallback der Hupe. Als Konstante statt als Name, damit ein Tippfehler nicht erst im
+     *  Spiel auffaellt — der Compiler kennt sie. */
+    public static final Sound DEFAULT_HORN_SOUND = Sound.BLOCK_NOTE_BLOCK_DIDGERIDOO;
 
     public double maxSpeed;
     public double maxReverseSpeed;
@@ -52,6 +64,11 @@ public final class CarConfig {
     public double gripDefault;
     public double handbrakeGrip;
     public boolean understeerSound;
+    /** Sound der Hupe (Config-Key horn-sound, aufgeloest ueber die Sound-Registry). */
+    public Sound hornSound;
+    public float hornPitch;
+    /** Hoerweite der Hupe in Bloecken; playSound rechnet daraus die Lautstaerke. */
+    public double hornRange;
     public boolean debug;
     /** Zeigt Rad-Aufstandspunkte und Karosserie-Raster als Partikel (live umschaltbar). */
     public boolean debugWheels;
@@ -90,7 +107,10 @@ public final class CarConfig {
         gripIce = clampHumanValue("grip-ice", c.getDouble("grip-ice", 10.0)) / 100.0;
         gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 70.0)) / 100.0;
         handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 50.0)) / 100.0;
-        understeerSound = c.getBoolean("understeer-sound", false);
+        understeerSound = c.getBoolean("understeer-sound-enabled", false);
+        hornPitch = (float) clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
+        hornRange = clampHumanValue("horn-range", c.getDouble("horn-range", 80.0));
+        hornSound = resolveHornSound(c.getString("horn-sound"));
         debug = c.getBoolean("debug", false);
         debugWheels = c.getBoolean("debug-wheels", false);
     }
@@ -119,12 +139,47 @@ public final class CarConfig {
             case "crash-restitution" -> clamp(value, 0.0, 60.0);
             case "crash-spin" -> clamp(value, 0.0, 400.0);
             case "drag" -> clamp(value, 0.0, 100.0);
+            // Pitch-Bereich des Protokolls; 0 ist erlaubt und gewollt (siehe understeer-sound-enabled).
+            case "horn-pitch" -> clamp(value, 0.0, 2.0);
+            // Obergrenze ist Serverschutz, kein Geschmack: der Sound geht an JEDEN Spieler im Radius.
+            case "horn-range" -> clamp(value, 1.0, 160.0);
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip" ->
                     clamp(value, 0.0, 150.0);
             // Absichtlich OHNE Obergrenze: ein neuer Zahlen-Key soll hier auffallen
             // (der Selftest-Fall config-obergrenzen prueft genau das).
             default -> Math.max(0.0, value);
         };
+    }
+
+    /**
+     * Sound-Name aus der Config in einen Sound. Unbekannte oder kaputte Namen sind kein
+     * Grund, das Plugin lahmzulegen: eine Warnung, dann der Default — eine hand-editierte
+     * config.yml darf reload() nicht sprengen.
+     */
+    private Sound resolveHornSound(String name) {
+        Sound sound = lookupSound(name);
+        if (sound != null) {
+            return sound;
+        }
+        if (name != null && !name.isBlank()) {
+            plugin.getLogger().warning("Unbekannter Sound in horn-sound: \"" + name
+                    + "\" — es gilt " + soundName(DEFAULT_HORN_SOUND) + ".");
+        }
+        return DEFAULT_HORN_SOUND;
+    }
+
+    /** Sound zu einem Namen wie "minecraft:block.note_block.bass" oder null. */
+    public static Sound lookupSound(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        NamespacedKey key = NamespacedKey.fromString(name.trim().toLowerCase(Locale.ROOT));
+        return key == null ? null : Registry.SOUNDS.get(key);
+    }
+
+    /** Umkehrung von lookupSound — der Name, den /car config anzeigt. */
+    public static String soundName(Sound sound) {
+        return Registry.SOUNDS.getKeyOrThrow(sound).asString();
     }
 
     private static double clamp(double value, double min, double max) {

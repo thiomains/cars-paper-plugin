@@ -39,10 +39,11 @@ public final class CarPermissions {
         return CONFIG_PREFIX + key;
     }
 
-    /** Alle Config-Keys in Anzeige-Reihenfolge (Zahlen zuerst, dann Schalter). */
+    /** Alle Config-Keys in Anzeige-Reihenfolge (Zahlen, Schalter, freier Text). */
     public static List<String> configKeys() {
         List<String> keys = new ArrayList<>(CarConfig.NUMBER_KEYS);
         keys.addAll(CarConfig.BOOL_KEYS);
+        keys.addAll(CarConfig.STRING_KEYS);
         return keys;
     }
 

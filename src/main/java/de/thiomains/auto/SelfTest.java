@@ -148,7 +148,7 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("grip-ice", 15.0),
             Map.entry("grip-default", 80.0),
             Map.entry("handbrake-grip", 35.0),
-            Map.entry("understeer-sound", true));
+            Map.entry("understeer-sound-enabled", true));
 
     /** Startet den Lauf; false, wenn bereits einer läuft. */
     public boolean start() {
@@ -2231,22 +2231,25 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass("alle Zahlen-Keys sind nach oben begrenzt");
         });
 
-        // Migration: bekannte Keys werden uebernommen, unbekannte fallen weg.
+        // Migration: bekannte Keys werden uebernommen, umbenannte wandern mit, unbekannte fallen weg.
         sweep.run("config-migration", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
         }, run -> {
             YamlConfiguration old = new YamlConfiguration();
             old.set("max-speed", 99.0);
             old.set("grip-ice", 42.0);
+            // Der alte Name des Schalters: muss unter dem neuen Namen ankommen.
             old.set("understeer-sound", false);
+            old.set("horn-sound", "minecraft:entity.donkey.angry");
             old.set("uralter-key", 7.0);
             YamlConfiguration target = new YamlConfiguration();
             target.set("max-speed", 162.0);
             target.set("grip-ice", 15.0);
-            target.set("understeer-sound", true);
+            target.set("understeer-sound-enabled", true);
+            target.set("horn-sound", "minecraft:block.note_block.didgeridoo");
             int carried = AutoPlugin.carryOver(old, target);
             List<String> errors = new ArrayList<>();
-            if (carried != 3) {
-                errors.add("uebernommen: " + carried + " statt 3");
+            if (carried != 4) {
+                errors.add("uebernommen: " + carried + " statt 4");
             }
             if (target.getDouble("max-speed") != 99.0) {
                 errors.add("max-speed nicht uebernommen: " + target.getDouble("max-speed"));
@@ -2254,8 +2257,11 @@ public final class SelfTest extends BukkitRunnable {
             if (target.getDouble("grip-ice") != 42.0) {
                 errors.add("grip-ice nicht uebernommen: " + target.getDouble("grip-ice"));
             }
-            if (target.getBoolean("understeer-sound")) {
-                errors.add("Boolean-Key nicht uebernommen");
+            if (target.getBoolean("understeer-sound-enabled")) {
+                errors.add("umbenannter Boolean-Key nicht uebernommen");
+            }
+            if (!"minecraft:entity.donkey.angry".equals(target.getString("horn-sound"))) {
+                errors.add("String-Key nicht uebernommen: " + target.getString("horn-sound"));
             }
             if (target.isSet("uralter-key")) {
                 errors.add("unbekannter Key wurde mitgeschleppt");
@@ -2263,7 +2269,7 @@ public final class SelfTest extends BukkitRunnable {
             if (!errors.isEmpty()) {
                 return Result.fail(String.join(" | ", errors));
             }
-            return Result.pass("3 bekannte Keys uebernommen, unbekannter verworfen");
+            return Result.pass("4 Keys uebernommen (inkl. Umbenennung), unbekannter verworfen");
         });
 
         // Spieler-Prefs: der alte Key reverse_invert_mouse muss still migriert werden.
@@ -2339,9 +2345,15 @@ public final class SelfTest extends BukkitRunnable {
                 errors.add("config-Keys: " + keys.size() + " statt " + CarPermissions.configKeys().size());
             }
             List<String> bool = List.copyOf(command.suggest(stack,
-                    new String[]{"config", "understeer-sound", ""}));
+                    new String[]{"config", "understeer-sound-enabled", ""}));
             if (!bool.equals(List.of("true", "false"))) {
                 errors.add("Boolean-Key schlaegt " + bool + " vor");
+            }
+            // String-Keys ebenfalls nicht: die Sound-Registry hat vierstellig viele Eintraege.
+            List<String> text = List.copyOf(command.suggest(stack,
+                    new String[]{"config", "horn-sound", ""}));
+            if (!text.isEmpty()) {
+                errors.add("String-Key schlaegt " + text + " vor statt gar nichts");
             }
             // Zahlen-Keys schlagen NICHTS vor: der aktuelle Wert im Eingabefeld wurde beim
             // Tippen versehentlich mit uebernommen.

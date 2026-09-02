@@ -6,6 +6,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -25,6 +26,7 @@ public final class CarCommand implements BasicCommand {
 
     private static final List<String> NUMBER_KEYS = CarConfig.NUMBER_KEYS;
     private static final List<String> BOOL_KEYS = CarConfig.BOOL_KEYS;
+    private static final List<String> STRING_KEYS = CarConfig.STRING_KEYS;
     private static final List<String> MAX_100_KEYS = List.of(
             "drag", "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip");
 
@@ -88,7 +90,8 @@ public final class CarCommand implements BasicCommand {
         }
         if (name.equals("config") && args.length >= 3) {
             String key = args[1].toLowerCase();
-            if ((NUMBER_KEYS.contains(key) || BOOL_KEYS.contains(key)) && !has.test(CarPermissions.config(key))) {
+            if ((NUMBER_KEYS.contains(key) || BOOL_KEYS.contains(key) || STRING_KEYS.contains(key))
+                    && !has.test(CarPermissions.config(key))) {
                 return new Decision(Decision.Kind.MISSING_PERMISSION, name, CarPermissions.config(key));
             }
         }
@@ -242,6 +245,9 @@ public final class CarCommand implements BasicCommand {
             for (String key : BOOL_KEYS) {
                 sender.sendMessage(Component.text("  " + key + " = " + boolValue(key), NamedTextColor.YELLOW));
             }
+            for (String key : STRING_KEYS) {
+                sender.sendMessage(Component.text("  " + key + " = " + stringValue(key), NamedTextColor.YELLOW));
+            }
             return;
         }
         String key = args[1].toLowerCase();
@@ -251,13 +257,14 @@ public final class CarCommand implements BasicCommand {
             return;
         }
         boolean isNumber = NUMBER_KEYS.contains(key);
-        if (!isNumber && !BOOL_KEYS.contains(key)) {
+        boolean isString = STRING_KEYS.contains(key);
+        if (!isNumber && !isString && !BOOL_KEYS.contains(key)) {
             unknownKey(sender, args[1]);
             return;
         }
         if (args.length == 2) {
-            sender.sendMessage(Component.text(key + " = " + (isNumber ? humanValue(key) : boolValue(key)),
-                    NamedTextColor.YELLOW));
+            String shown = isNumber ? humanValue(key) : isString ? stringValue(key) : String.valueOf(boolValue(key));
+            sender.sendMessage(Component.text(key + " = " + shown, NamedTextColor.YELLOW));
             return;
         }
         if (args.length != 3) {
@@ -287,6 +294,26 @@ public final class CarCommand implements BasicCommand {
             plugin.saveConfig();
             carConfig.reload();
             sender.sendMessage(Component.text(key + ": " + old + " → " + value + unitSuffix(key) + " (live aktiv)", NamedTextColor.GREEN));
+            return;
+        }
+        if (isString) {
+            // Bisher ist jeder String-Key ein Sound-Name; ein neuer Key mit anderer Bedeutung
+            // braucht hier eine eigene Pruefung statt der Registry-Abfrage.
+            Sound sound = CarConfig.lookupSound(raw);
+            if (sound == null) {
+                sender.sendMessage(Component.text("Unbekannter Sound: " + raw, NamedTextColor.RED));
+                sender.sendMessage(Component.text("Beispiel: minecraft:block.note_block.bass",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+            String old = stringValue(key);
+            // Normalisiert speichern (Namensraum ergaenzt, klein), damit Anzeige und Datei gleich lauten.
+            String value = CarConfig.soundName(sound);
+            plugin.getConfig().set(key, value);
+            plugin.saveConfig();
+            carConfig.reload();
+            sender.sendMessage(Component.text(key + ": " + old + " → " + value + " (live aktiv)",
+                    NamedTextColor.GREEN));
             return;
         }
         if (!raw.equalsIgnoreCase("true") && !raw.equalsIgnoreCase("false")) {
@@ -395,6 +422,7 @@ public final class CarCommand implements BasicCommand {
                  "engine-braking", "max-lateral-grip", "downhill-assist" -> " m/s²";
             case "drag" -> " %/s";
             case "turn-curvature" -> " °/m";
+            case "horn-range" -> " Blöcke";
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
                  "slope-resistance", "crash-restitution", "crash-spin" -> " %";
             default -> "";
@@ -402,7 +430,16 @@ public final class CarCommand implements BasicCommand {
     }
 
     private boolean boolValue(String key) {
-        return key.equals("understeer-sound") ? carConfig.understeerSound : carConfig.debug;
+        return switch (key) {
+            case "understeer-sound-enabled" -> carConfig.understeerSound;
+            case "debug-wheels" -> carConfig.debugWheels;
+            default -> carConfig.debug;
+        };
+    }
+
+    /** Aktueller Wert eines String-Keys (bisher gibt es genau einen). */
+    private String stringValue(String key) {
+        return key.equals("horn-sound") ? CarConfig.soundName(carConfig.hornSound) : "";
     }
 
     private void unknownKey(CommandSender sender, String key) {
@@ -444,6 +481,8 @@ public final class CarCommand implements BasicCommand {
                 if (BOOL_KEYS.contains(key)) {
                     return filter(List.of("true", "false"), args[2]);
                 }
+                // String-Keys bekommen bewusst keine Wertvorschlaege: die Sound-Registry
+                // haette vierstellig viele Eintraege.
             }
             return List.of();
         }
