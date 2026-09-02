@@ -8,6 +8,7 @@ Stufen, Steigungen und Crashs mit Drehimpuls.
 - **Server:** Paper, `api-version: '26.2'` (Minecraft 26.2)
 - **Java:** 25
 - **Build:** Maven, kein Testframework, kein CI
+- **Lizenz:** GPL-3.0 (siehe LICENSE)
 
 ## Überblick
 
@@ -203,3 +204,8 @@ Details zu Paper-Fallstricken, Physik-Interna und Konventionen stehen in
 Deutsche User-Meldungen und Kommentare, englische Bezeichner. Commits semantisch und
 deutsch (`feat(physik): …`), Hauptzweig `main`. Es gibt kein JUnit — verifiziert wird
 über `scripts/selftest.sh` (Build + Headless-Server + Szenarien).
+
+## Lizenz
+
+GPL-3.0 — siehe LICENSE. Wer das Plugin verändert und weitergibt, muss den Quellcode
+unter derselben Lizenz offenlegen.
