@@ -4,7 +4,7 @@ Fahrbare Autos für Minecraft als Paper-Plugin — mit einer Fahrphysik, die auf
 echten Geschwindigkeitsvektor beruht: Grip pro Rad, Traktionskreis, Schlupf, Driften,
 Stufen, Steigungen und Crashs mit Drehimpuls.
 
-- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.4.0**
+- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.5.0**
 - **Server:** Paper, `api-version: '26.2'` (Minecraft 26.2)
 - **Java:** 25
 - **Build:** Maven, kein Testframework, kein CI
@@ -32,6 +32,7 @@ sich per Befehl **live** ändern — ohne Restart.
 | --- | --- |
 | Rechtsklick mit dem Auto-Item auf einen Block | Auto platzieren |
 | Rechtsklick aufs Auto | Einsteigen (nur wenn frei) |
+| **Rechtsklick**, während man fährt | Hupen. Der Klick gehört ganz der Hupe: aus dem Auto heraus wird nichts platziert oder benutzt |
 | **W / S** | Gas vorwärts / rückwärts; die Gegentaste bremst mit voller Bremskraft |
 | **Maus** oder **A / D** | Lenken (A/D hat Vorrang; Mauslenkung abschaltbar). Die Maus wirkt wie ein Lenkrad: geradeaus nach vorn **oder** nach hinten schauen heißt Lenkrad gerade, quer zur Karosserie (90°) voller Einschlag, dazwischen linear |
 | **Springen** | Handbremse — blockiert die Räder, Grip bricht auf `handbrake-grip` ein |
@@ -87,7 +88,7 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 10`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+`config.yml` (`config-version: 11`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
 auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
@@ -101,7 +102,17 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Untergrund | `grip-concrete`, `grip-grass`, `grip-ice`, `grip-default` |
 | Gelände | `downhill-assist`, `slope-resistance` |
 | Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
-| Sonstiges | `understeer-sound`, `debug`, `debug-wheels` |
+| Hupe | `horn-sound`, `horn-pitch`, `horn-range` |
+| Sonstiges | `understeer-sound-enabled`, `debug`, `debug-wheels` |
+
+`horn-sound` ist ein Name aus der Vanilla-Sound-Registry (`minecraft:block.note_block.didgeridoo`
+ist der Standard); ein unbekannter Name wird mit einer Warnung im Log auf den Standard
+zurückgesetzt. `horn-range` steht in Blöcken (Standard 80) — Minecraft rechnet daraus die
+Lautstärke.
+
+Beim Update auf 1.5.0: `understeer-sound` heißt jetzt `understeer-sound-enabled`, damit das
+Suffix `-sound` eindeutig für den Sound-**Namen** steht. Ein gesetzter Wert wandert bei der
+Migration automatisch mit.
 
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
 Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere Default.
