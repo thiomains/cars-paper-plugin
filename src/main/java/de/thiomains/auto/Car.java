@@ -31,6 +31,7 @@ public final class Car {
     /** Noch nicht verrechnete Hoehendifferenz der Steigungs-Energie (siehe DriveTask). */
     private double slopeDebt;
     private long lastUndersteerSoundTick = -1000;
+    private long lastHornTick = -1000;
     private int simTicks;
     private boolean simDrift;
     private SimInput simInput;
@@ -168,6 +169,14 @@ public final class Car {
 
     public void setLastUndersteerSoundTick(long lastUndersteerSoundTick) {
         this.lastUndersteerSoundTick = lastUndersteerSoundTick;
+    }
+
+    public long getLastHornTick() {
+        return lastHornTick;
+    }
+
+    public void setLastHornTick(long lastHornTick) {
+        this.lastHornTick = lastHornTick;
     }
 
     public int getSimTicks() {
