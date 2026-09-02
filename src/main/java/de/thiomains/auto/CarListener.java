@@ -85,7 +85,7 @@ public final class CarListener implements Listener {
         Location loc = car.getBase().getLocation();
         // Bukkits Hoerweite ist 16 Bloecke mal Lautstaerke; horn-range steht in Bloecken.
         float volume = (float) (config.hornRange / 16.0);
-        loc.getWorld().playSound(loc, config.hornSound, volume, config.hornPitch);
+        loc.getWorld().playSound(loc, config.hornSound, volume, (float) config.hornPitch);
         if (config.debug) {
             logger.info("[Debug] Hupe: spieler=" + player.getName()
                     + " sound=" + CarConfig.soundName(config.hornSound)

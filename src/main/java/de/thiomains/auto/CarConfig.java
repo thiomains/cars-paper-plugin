@@ -66,7 +66,7 @@ public final class CarConfig {
     public boolean understeerSound;
     /** Sound der Hupe (Config-Key horn-sound, aufgeloest ueber die Sound-Registry). */
     public Sound hornSound;
-    public float hornPitch;
+    public double hornPitch;
     /** Hoerweite der Hupe in Bloecken; playSound rechnet daraus die Lautstaerke. */
     public double hornRange;
     public boolean debug;
@@ -108,7 +108,7 @@ public final class CarConfig {
         gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 70.0)) / 100.0;
         handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 50.0)) / 100.0;
         understeerSound = c.getBoolean("understeer-sound-enabled", false);
-        hornPitch = (float) clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
+        hornPitch = clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
         hornRange = clampHumanValue("horn-range", c.getDouble("horn-range", 80.0));
         hornSound = resolveHornSound(c.getString("horn-sound"));
         debug = c.getBoolean("debug", false);
