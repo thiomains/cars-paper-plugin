@@ -24,8 +24,12 @@ public final class Car {
     private double spinVel;
     private double lastPitchDeg;
     private double lastRollDeg;
+    /** Optischer Hoehen-Versatz des Modells gegen das Fahrniveau (siehe DriveTask). */
+    private double lastSinkOffset;
     private boolean lastStepBlocked;
     private double fallSpeed;
+    /** Noch nicht verrechnete Hoehendifferenz der Steigungs-Energie (siehe DriveTask). */
+    private double slopeDebt;
     private long lastUndersteerSoundTick = -1000;
     private int simTicks;
     private boolean simDrift;
@@ -117,6 +121,14 @@ public final class Car {
         this.lastPitchDeg = lastPitchDeg;
     }
 
+    public double getLastSinkOffset() {
+        return lastSinkOffset;
+    }
+
+    public void setLastSinkOffset(double lastSinkOffset) {
+        this.lastSinkOffset = lastSinkOffset;
+    }
+
     public double getLastRollDeg() {
         return lastRollDeg;
     }
@@ -136,6 +148,14 @@ public final class Car {
 
     public double getFallSpeed() {
         return fallSpeed;
+    }
+
+    public double getSlopeDebt() {
+        return slopeDebt;
+    }
+
+    public void setSlopeDebt(double slopeDebt) {
+        this.slopeDebt = slopeDebt;
     }
 
     public void setFallSpeed(double fallSpeed) {

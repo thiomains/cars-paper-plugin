@@ -32,10 +32,10 @@ sich per Befehl **live** ändern — ohne Restart.
 | Rechtsklick mit dem Auto-Item auf einen Block | Auto platzieren |
 | Rechtsklick aufs Auto | Einsteigen (nur wenn frei) |
 | **W / S** | Gas vorwärts / rückwärts; die Gegentaste bremst mit voller Bremskraft |
-| **Maus** oder **A / D** | Lenken (A/D hat Vorrang; Mauslenkung abschaltbar) |
+| **Maus** oder **A / D** | Lenken (A/D hat Vorrang; Mauslenkung abschaltbar). Die Maus wirkt wie ein Lenkrad: geradeaus nach vorn **oder** nach hinten schauen heißt Lenkrad gerade, quer zur Karosserie (90°) voller Einschlag, dazwischen linear |
 | **Springen** | Handbremse — blockiert die Räder, Grip bricht auf `handbrake-grip` ein |
 | **Sneak** | Aussteigen |
-| Schlag aufs Auto | Abbauen (nur wenn niemand fährt), Item droppt |
+| Schlag aufs Auto | Abbauen (nur wenn niemand fährt), Item droppt — im Kreativmodus nicht, dort kostet das Platzieren ja auch keines |
 
 In der Actionbar laufen ein Strich-Tacho (km/h, `R` bei Rückwärtsfahrt) und optional ein
 Grip-Budget-Balken: ≥ 100 % heißt, die Reifen sind am Limit (Quer- **und** Pedalkraft
@@ -86,8 +86,9 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 8`). Die Werte sind menschenlesbar; `CarConfig.reload()`
-rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich — genau diesen
+`config.yml` (`config-version: 10`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
+auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
 `config.veraltet.yml` gesichert und unveränderte Keys werden übernommen.
 
@@ -98,7 +99,7 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Lenkung & Grip | `max-lateral-grip`, `turn-curvature`, `turn-min-speed`, `handbrake-grip` |
 | Untergrund | `grip-concrete`, `grip-grass`, `grip-ice`, `grip-default` |
 | Gelände | `downhill-assist`, `slope-resistance` |
-| Crash | `crash-restitution`, `crash-spin` |
+| Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
 | Sonstiges | `understeer-sound`, `debug` |
 
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
@@ -108,22 +109,42 @@ Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere
 
 - **Vektor statt Skalar:** Zustand ist `velX/velZ` + `yaw`; die Fahrtrichtungskomponente
   trägt Gas und Bremse, der Rest ist Schlupf und wird von der Querreibung gefressen.
+- **Achsen tragen, Karosserie blockiert:** Wie hoch das Auto steht, entscheiden Achsen und
+  Unterboden — die Stoßstange hebt es nicht an. Gegen Wände blockiert dagegen die volle
+  Karosserie, die Nase trifft also vor den Rädern. Auf einer Treppe steigt das Auto damit eine
+  Stufe pro Reihe, statt auf der Stoßstange zu reiten.
 - **Grip nur am Boden:** Bodenkontakt und Grip stammen aus vier Rad-Samples (±0,9 längs,
-  ±0,7 quer). Halb über der Kante = halber Grip; in der Luft gibt es weder Antrieb noch
-  Bremse noch Lenkung — nur Ballistik und Luftwiderstand.
+  ±0,7 quer), gemessen gegen den Boden unter der Fahrzeugmitte — auf einer Treppe zählt die
+  tief stehende Hinterachse trotzdem mit. Die beiden Räder einer Achse sind verbunden: hängt
+  eines mehr als einen halben Block unter dem anderen, hebt es ab. Und unter drei tragenden
+  Rädern **kippt** das Auto zur unbelasteten Seite ab, statt auf der Kante zu balancieren.
+  In der Luft gibt es weder Antrieb noch Bremse noch Lenkung — nur Ballistik und
+  Luftwiderstand.
 - **Lenkung mit Budget:** Lenkrate = min(Lenkrad-Anschlag × Tempo, verfügbares Grip-Budget).
   Der Geschwindigkeitsvektor folgt der Rollrichtung nur zu einem Anteil des Budgets nach —
   daraus entstehen Untersteuern und Drift von selbst.
 - **Kollision:** achsenweise Substeps alle 0,4 Blöcke mit yaw-ausgerichtetem Footprint in
-  realen Maßen (1,8 × 2,5 Blöcke), andere Autos inklusive. Stufen bis 1 Block werden
-  befahren, bergab folgt das Auto dem Boden statt abzuheben.
+  realen Maßen (1,8 × 2,5 Blöcke), andere Autos inklusive. Eine ganze Blockstufe wird immer
+  befahren — auch von Belägen mit gekappter Oberkante (Ackerland, Schlamm) aus, wo sie
+  rechnerisch etwas über einen Block misst. Bergab folgt das Auto dem Boden statt abzuheben,
+  und zwar als starrer Körper auf der höchsten Stütze unter dem Footprint: Rampen und Treppen
+  fährt es hoch, statt zwischendurch auf das Niveau seiner Mitte zurückzufallen.
+- **Steigungen:** bergauf kostet Lageenergie, bergab gibt sie zurück (skaliert mit
+  `slope-resistance`). Die Höhe wird dabei als Schuld geführt und über die gefahrene Strecke
+  verrechnet, nicht in einer Rate — sonst wäre jede Stufe im Kriechtempo eine Wand. Ob eine
+  Steigung fahrbar ist, entscheidet damit die Leistungsbilanz aus `acceleration`, Grip und
+  `slope-resistance`.
 - **Crash:** gedeckelter Abprall plus Drehimpuls aus dem Aufprall-Hebel — die Karosserie
   dreht sich, der Vektor zieht grip-begrenzt nach: emergentes Schleudern.
 - **Vertikal:** Fall bis `max-fall-speed`, Landung auf der echten Blockoberkante (Slabs
   eingerechnet), harte Landungen dämpfen quer. Wasser trägt nicht, bremst aber den Fall
   auf `max-sink-speed`; Lava bleibt eine Wand.
-- **Optik:** Das Modell nickt in Steigungen und beim Bremsen/Beschleunigen und rollt in
-  Kurven — reine Anzeige, ohne Rückwirkung auf die Physik.
+- **Optik:** Das Modell nickt so, wie die Achsen stehen (Vorderachse gegen Hinterachse), dazu
+  Squat/Dive beim Bremsen und Beschleunigen; es rollt in Kurven und mit der Achsverschränkung,
+  und es sitzt zwischen den Achsen statt auf der höchsten Stütze — beim Herunterfahren einer
+  Stufe folgt die Karosserie also den Rädern, statt oben zu schweben. Alles reine Anzeige,
+  ohne Rückwirkung auf die Physik. `/car config debug-wheels true` zeigt die Aufstandspunkte als
+  Partikel: grün = Rad trägt, rot = Rad hängt, blau = Karosserie-Raster.
 
 ## Tests
 
@@ -140,9 +161,8 @@ Config-Werte — die Erwartungen stehen in `SelfTest.java`. Exit 0 heißt grün,
 2 Harness-Fehler.
 
 Szenarien für bekannte, noch offene Bugs sind als `knownFail` markiert: sie dürfen fehlschlagen,
-ohne den Lauf rot zu färben, melden aber `UNEXPECTED-PASS`, sobald der Bug behoben ist. Offen ist
-derzeit, dass von Belägen mit reduzierter Oberkante (Farmland, Grasweg, Schlamm) eine ganze
-1-Block-Stufe nicht befahrbar ist.
+ohne den Lauf rot zu färben, melden aber `UNEXPECTED-PASS`, sobald der Bug behoben ist. Derzeit
+ist kein Szenario so markiert — der Lauf ist vollständig grün.
 
 Nicht automatisiert und weiterhin manuell: echte Spielereingaben, die Modell-Optik und das
 Resourcepack.

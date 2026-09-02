@@ -17,10 +17,10 @@ public final class CarConfig {
             "max-speed", "max-reverse-speed", "max-fall-speed", "acceleration", "reverse-acceleration",
             "brake-deceleration", "handbrake-deceleration", "engine-braking", "drag", "max-lateral-grip",
             "turn-curvature", "turn-min-speed", "downhill-assist", "slope-resistance",
-            "crash-restitution", "crash-spin", "max-sink-speed",
+            "crash-restitution", "crash-spin", "tip-acceleration", "max-sink-speed",
             "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip"
     );
-    public static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug");
+    public static final List<String> BOOL_KEYS = List.of("understeer-sound", "debug", "debug-wheels");
 
     public double maxSpeed;
     public double maxReverseSpeed;
@@ -42,6 +42,8 @@ public final class CarConfig {
     public double crashRestitution;
     /** Skalierer des Crash-Drehimpulses aus dem Aufprall-Hebel (1.0 = Standard). */
     public double crashSpin;
+    /** Schub zur unbelasteten Seite, wenn weniger als drei Raeder tragen (Abkippen). */
+    public double tipAcceleration;
     /** Maximale Sinkgeschwindigkeit in Wasser. */
     public double maxSinkSpeed;
     public double gripConcrete;
@@ -51,6 +53,8 @@ public final class CarConfig {
     public double handbrakeGrip;
     public boolean understeerSound;
     public boolean debug;
+    /** Zeigt Rad-Aufstandspunkte und Karosserie-Raster als Partikel (live umschaltbar). */
+    public boolean debugWheels;
 
     private final JavaPlugin plugin;
 
@@ -63,30 +67,32 @@ public final class CarConfig {
         FileConfiguration c = plugin.getConfig();
         // Alle Werte werden beim Laden geclampt: Hand-Edits der config.yml koennen die
         // Physik sonst aus dem Sinn-Bereich werfen (z. B. negativer Grip invertiert approachZero).
-        maxSpeed = kmh(clampHumanValue("max-speed", c.getDouble("max-speed", 162.0)));
-        maxReverseSpeed = kmh(clampHumanValue("max-reverse-speed", c.getDouble("max-reverse-speed", 8.6)));
+        maxSpeed = kmh(clampHumanValue("max-speed", c.getDouble("max-speed", 170.0)));
+        maxReverseSpeed = kmh(clampHumanValue("max-reverse-speed", c.getDouble("max-reverse-speed", 20.0)));
         maxFallSpeed = kmh(clampHumanValue("max-fall-speed", c.getDouble("max-fall-speed", 144.0)));
-        acceleration = metersPerSecondSquared(clampHumanValue("acceleration", c.getDouble("acceleration", 12.0)));
-        reverseAcceleration = metersPerSecondSquared(clampHumanValue("reverse-acceleration", c.getDouble("reverse-acceleration", 3.2)));
-        brakeDeceleration = metersPerSecondSquared(clampHumanValue("brake-deceleration", c.getDouble("brake-deceleration", 24.0)));
-        handbrakeDeceleration = metersPerSecondSquared(clampHumanValue("handbrake-deceleration", c.getDouble("handbrake-deceleration", 10.0)));
-        engineBraking = metersPerSecondSquared(clampHumanValue("engine-braking", c.getDouble("engine-braking", 1.6)));
-        drag = percentPerSecondToTick(clampHumanValue("drag", c.getDouble("drag", 1.0)));
-        maxLatGrip = metersPerSecondSquared(clampHumanValue("max-lateral-grip", c.getDouble("max-lateral-grip", 22.0)));
-        turnMinSpeed = kmh(clampHumanValue("turn-min-speed", c.getDouble("turn-min-speed", 3.6)));
-        turnCurvature = clampHumanValue("turn-curvature", c.getDouble("turn-curvature", 40.0));
+        acceleration = metersPerSecondSquared(clampHumanValue("acceleration", c.getDouble("acceleration", 5.0)));
+        reverseAcceleration = metersPerSecondSquared(clampHumanValue("reverse-acceleration", c.getDouble("reverse-acceleration", 2.0)));
+        brakeDeceleration = metersPerSecondSquared(clampHumanValue("brake-deceleration", c.getDouble("brake-deceleration", 8.0)));
+        handbrakeDeceleration = metersPerSecondSquared(clampHumanValue("handbrake-deceleration", c.getDouble("handbrake-deceleration", 6.0)));
+        engineBraking = metersPerSecondSquared(clampHumanValue("engine-braking", c.getDouble("engine-braking", 1.2)));
+        drag = percentPerSecondToTick(clampHumanValue("drag", c.getDouble("drag", 3.5)));
+        maxLatGrip = metersPerSecondSquared(clampHumanValue("max-lateral-grip", c.getDouble("max-lateral-grip", 18.0)));
+        turnMinSpeed = kmh(clampHumanValue("turn-min-speed", c.getDouble("turn-min-speed", 0.0)));
+        turnCurvature = clampHumanValue("turn-curvature", c.getDouble("turn-curvature", 30.0));
         downhillAssist = metersPerSecondSquared(clampHumanValue("downhill-assist", c.getDouble("downhill-assist", 6.0)));
-        slopeResistance = clampHumanValue("slope-resistance", c.getDouble("slope-resistance", 100.0)) / 100.0;
+        slopeResistance = clampHumanValue("slope-resistance", c.getDouble("slope-resistance", 10.0)) / 100.0;
         crashRestitution = clampHumanValue("crash-restitution", c.getDouble("crash-restitution", 25.0)) / 100.0;
         crashSpin = clampHumanValue("crash-spin", c.getDouble("crash-spin", 100.0)) / 100.0;
+        tipAcceleration = metersPerSecondSquared(clampHumanValue("tip-acceleration", c.getDouble("tip-acceleration", 16.0)));
         maxSinkSpeed = kmh(clampHumanValue("max-sink-speed", c.getDouble("max-sink-speed", 9.0)));
         gripConcrete = clampHumanValue("grip-concrete", c.getDouble("grip-concrete", 100.0)) / 100.0;
         gripGrass = clampHumanValue("grip-grass", c.getDouble("grip-grass", 50.0)) / 100.0;
-        gripIce = clampHumanValue("grip-ice", c.getDouble("grip-ice", 15.0)) / 100.0;
-        gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 80.0)) / 100.0;
-        handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 35.0)) / 100.0;
-        understeerSound = c.getBoolean("understeer-sound", true);
+        gripIce = clampHumanValue("grip-ice", c.getDouble("grip-ice", 10.0)) / 100.0;
+        gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 70.0)) / 100.0;
+        handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 50.0)) / 100.0;
+        understeerSound = c.getBoolean("understeer-sound", false);
         debug = c.getBoolean("debug", false);
+        debugWheels = c.getBoolean("debug-wheels", false);
     }
 
     /**
@@ -95,13 +101,28 @@ public final class CarConfig {
      */
     public static double clampHumanValue(String key, double value) {
         return switch (key) {
+            // Tempo (km/h). Der Deckel ist kein Geschmacksurteil, sondern Serverschutz:
+            // resolveStep tastet die Route in 0,4-Bloecke-Schritten ab, also kostet jedes km/h
+            // Substeps mal neun Rasterpunkte mal zwei Achsen — pro Tick und Auto.
+            case "max-speed", "max-fall-speed" -> clamp(value, 0.0, 500.0);
+            case "max-reverse-speed" -> clamp(value, 0.0, 200.0);
+            case "max-sink-speed" -> clamp(value, 3.6, 200.0);
+            case "turn-min-speed" -> clamp(value, 0.0, 100.0);
+            // Laengs- und Querkraefte (m/s²)
+            case "acceleration", "reverse-acceleration", "brake-deceleration",
+                 "handbrake-deceleration", "max-lateral-grip" -> clamp(value, 0.0, 200.0);
+            case "engine-braking", "downhill-assist", "tip-acceleration" -> clamp(value, 0.0, 100.0);
+            // Lenkrad-Anschlag in Grad pro Meter: darueber dreht sich das Auto im Substep um
+            // mehr als eine halbe Umdrehung und die Spur wird unansehnlich.
+            case "turn-curvature" -> clamp(value, 0.0, 180.0);
             case "slope-resistance" -> clamp(value, 0.0, 200.0);
             case "crash-restitution" -> clamp(value, 0.0, 60.0);
             case "crash-spin" -> clamp(value, 0.0, 400.0);
-            case "max-sink-speed" -> Math.max(3.6, value);
             case "drag" -> clamp(value, 0.0, 100.0);
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip" ->
                     clamp(value, 0.0, 150.0);
+            // Absichtlich OHNE Obergrenze: ein neuer Zahlen-Key soll hier auffallen
+            // (der Selftest-Fall config-obergrenzen prueft genau das).
             default -> Math.max(0.0, value);
         };
     }

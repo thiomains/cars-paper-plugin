@@ -2,9 +2,11 @@ package de.thiomains.auto;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Color;
 import org.bukkit.Input;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -36,24 +38,35 @@ import java.util.List;
 public final class DriveTask extends BukkitRunnable {
 
     private static final long UNDERSTEER_SOUND_COOLDOWN_TICKS = 18;
-    private static final double GRAVITY_ACCEL = 0.08;
+    static final double GRAVITY_ACCEL = 0.08;
     private static final double ALIGN_FRACTION = 0.65;
     private static final double FRICTION_FRACTION = 0.5;
     static final double SPEED_EPSILON = 0.05;
     private static final double SLIP_SOUND_MIN_DEG = 12.0;
     private static final double SAMPLE_STEP = 0.4;
-    static final double MAX_STEP = 1.0;
+    // Stufenhoehe, die die Raeder noch nehmen: ein GANZER Block, auch wenn das Auto auf einem
+    // Belag mit gekappter Oberkante steht (Schlamm/Seelensand 0,875 -> Stufe misst 1,125).
+    static final double MAX_STEP = 1.125;
     private static final double LONG_HALF = 1.25;
     private static final double LAT_HALF = 0.9;
     private static final double CAR_COLLISION_RADIUS = 1.4;
     private static final double STANDSTILL_SPEED = 0.007; // ~0,5 km/h
     private static final double STANDSTILL_MIN_GRIP = 0.4; // darunter (glatt) rollt das Auto aus statt zu rasten
     private static final double WATER_DRAG = 0.10;
+    private static final double WATER_SINK_DAMPING = 0.85; // Rest des Abstands zu max-sink-speed je Substep
     private static final double LANDING_SOUND_MIN_FALL = 0.5; // ~36 km/h vertikal
     private static final double LANDING_SPEED_KEEP = 0.7;
     static final double MAX_STEP_DOWN = 1.2;
     static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
     private static final double OVERSPEED_DOWNHILL_FACTOR = 1.5;
+    // Strecke, ueber die eine Hoehendifferenz energetisch verrechnet wird (Fahrzeuglaenge).
+    // Je Tick wird der Anteil der Schuld faellig, der auf die gefahrene Strecke entfaellt.
+    private static final double SLOPE_SPREAD = 2.5;
+    // Restschuld verfaellt, sobald es nicht mehr bergauf geht. Ohne das ueberlebt die Steigung
+    // sich selbst: abgetragen wird nur ueber Fahrstrecke, und der Abzug ist tempo-unabhaengig
+    // (g x slope-resistance). Wer oben langsam ankommt, haengt dann in einer Rueckkopplung fest
+    // — kaum Beschleunigung, kaum Strecke, Schuld bleibt. Auf der Ebene 1 km/h, live gesehen.
+    private static final double SLOPE_DEBT_FADE = 0.90;
     private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
     private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
     private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
@@ -64,10 +77,26 @@ public final class DriveTask extends BukkitRunnable {
     private static final double YAW_SMOOTH_IN = 0.30;
     private static final double YAW_SMOOTH_OUT = 0.40;
     private static final double YAW_DEADBAND = 0.03;
+    private static final double MOUSE_DEADZONE_DEG = 4.0; // darunter bleibt das Lenkrad gerade
+    private static final double MOUSE_FULL_LOCK_DEG = 90.0; // quer zur Karosse = voller Einschlag
+    // Zwei Raster mit zwei Aufgaben. Karosserie (GRID_*, reale Masse 1,8 x 2,5): was das Auto
+    // BLOCKIERT — die Stossstange darf nicht in eine Wand fahren. Aufstandsflaeche (SUPPORT_*,
+    // Achsen plus Unterboden): was das Auto TRAEGT. Wer beides vermischt, hebt das Auto schon
+    // an, wenn die Stossstange ueber einer Stufe haengt: auf einer Treppe greift die Ecke bei
+    // Yaw bis 1,54 Bloecke voraus, das Auto springt zwei Stufen hoch und faellt eine zurueck.
     private static final double[] GRID_LONG = {-LONG_HALF, 0.0, LONG_HALF};
     private static final double[] GRID_LAT = {-LAT_HALF, 0.0, LAT_HALF};
-    private static final double[] WHEEL_LONG = {-0.9, 0.9};
+    private static final double[] WHEEL_LONG = {-0.7, 0.7};
     private static final double[] WHEEL_LAT = {-0.7, 0.7};
+    private static final double AXLE_SPAN = 1.4; // Abstand Vorder- zu Hinterachse (2 x 0,7)
+    private static final double TRACK_WIDTH = 1.4; // Spurweite (2 x 0,7)
+    // Federweg: so weit darf ein Rad unter seinem Gegenstueck DERSELBEN Achse haengen. Darunter
+    // hebt es ab. Ohne diese Kopplung verwindet sich eine Achse um einen ganzen Block, sobald
+    // ein Rad neben einem Bordstein faehrt — und traegt trotzdem.
+    private static final double AXLE_TRAVEL = 0.5;
+    private static final double MODEL_MAX_SINK = 1.5; // wie tief das Modell unter das Fahrniveau darf
+    private static final double[] SUPPORT_LONG = {-0.7, 0.0, 0.7};
+    private static final double[] SUPPORT_LAT = {-0.7, 0.0, 0.7};
 
     private final CarManager carManager;
     private final CarConfig config;
@@ -126,28 +155,15 @@ public final class DriveTask extends BukkitRunnable {
         double lx = vx - vf * fx;
         double lz = vz - vf * fz;
 
-        // Bodenkontakt bestimmt alles Weitere: nur am Boden gibt es Grip und Kraefte.
-        // Grip/grounded kommen aus vier Rad-Samples (yaw-ausgerichtet, innerhalb des
-        // Footprints) mit einem Block Federungstoleranz (siehe wheelSupport); nicht
-        // gestuetzte Raeder zaehlen mit 0 in die Division durch 4: haengt die halbe
-        // Karosse ueber einer echten Kante, halbiert sich der wirksame Grip.
-        int gy = floor(loc.getY() - 0.05);
-        Block below = world.getBlockAt(floor(loc.getX()), gy, floor(loc.getZ()));
-        Material groundType = below.getType();
-        int supported = 0;
-        double gripSum = 0.0;
-        for (double wLong : WHEEL_LONG) {
-            for (double wLat : WHEEL_LAT) {
-                Block support = wheelSupport(world, floor(loc.getX() + fx * wLong + fz * wLat), gy,
-                        floor(loc.getZ() + fz * wLong - fx * wLat), loc.getY());
-                if (support != null) {
-                    supported++;
-                    gripSum += gripCalculator.gripFor(support.getType());
-                }
-            }
-        }
-        boolean grounded = supported >= 1;
-        double grip = grounded ? gripSum / 4.0 : 0.0;
+        // Bodenkontakt bestimmt alles Weitere: nur am Boden gibt es Grip und Kraefte. Beides
+        // kommt aus den vier Rad-Aufstandspunkten (siehe probeWheels, mit starrer Achse); nicht
+        // tragende Raeder zaehlen mit 0 in die Division durch 4: haengt die halbe Karosse ueber
+        // einer echten Kante, halbiert sich der wirksame Grip.
+        Wheels wheels = probeWheels(world, loc.getX(), loc.getY(), loc.getZ(), yaw, false);
+        Material groundType = world.getBlockAt(floor(loc.getX()), floor(loc.getY() - 0.05),
+                floor(loc.getZ())).getType();
+        boolean grounded = wheels.carrying() >= 1;
+        double grip = grounded ? wheels.gripSum() / 4.0 : 0.0;
         double gripEff = grip;
 
         // Ohne Fahrer greift die Simulations-Eingabe: damit laufen Gas, Bremse, Handbremse
@@ -258,6 +274,18 @@ public final class DriveTask extends BukkitRunnable {
             }
         }
 
+        // Kippen statt balancieren: mit weniger als drei tragenden Raedern gibt es keine stabile
+        // Auflage. Das Auto bekommt einen Schub zur unbelasteten Seite, rutscht von der Kante
+        // (oder dem einzelnen Rad) ab und faellt dort ganz normal herunter, sobald die Stuetze
+        // weg ist. Das ist die einzige Art, ein Umkippen zu zeigen: die Karosserie bleibt
+        // waagerecht, echte Rotation um die Kippachse gibt es im Modell nicht.
+        // tip-acceleration muss deutlich ueber dem liegen, was die Querreibung je Tick wegnimmt
+        // (FRICTION_FRACTION frisst die Haelfte), sonst zappelt das Auto nur auf der Kante.
+        if (grounded && !wheels.stable()) {
+            vx += wheels.tipX() * config.tipAcceleration;
+            vz += wheels.tipZ() * config.tipAcceleration;
+        }
+
         // Standfest: ohne Pedal unterhalb der Kriechgrenze hart anhalten — aber nur, wenn die
         // Reifen tragen koennen; auf Glatteis laeuft der Restschwung stattdessen natuerlich aus.
         if (grounded && !pedals && grip >= STANDSTILL_MIN_GRIP && Math.hypot(vx, vz) < STANDSTILL_SPEED) {
@@ -322,19 +350,42 @@ public final class DriveTask extends BukkitRunnable {
         car.setStepBlocked(stepBlocked);
 
         double fallBefore = car.getFallSpeed();
-        GravityResult gravity = applyGravity(world, targetX, targetY, targetZ, car, wantsMove);
+        GravityResult gravity = applyGravity(world, targetX, targetY, targetZ, yaw, car, wantsMove);
         targetY = gravity.y();
-        // Steigungs-Energie: einmal pro Tick am Gesamt-dy. Bergauf kostet kinetische Energie
-        // (2·g·dy), bergab wird sie symmetrisch gewonnen; downhill-assist bleibt als ein
-        // Arcade-Bonus und skaliert mit dem echten Gefaelle des Ticks (volle Wirkung ab 0,5
-        // Block Gefaelle pro Tick). Nicht bei echtem Fall (fallBefore == 0 UND fallSpeed == 0):
-        // eine Landung aus einem Fall darf keinen Schub erzeugen.
+        // Steigungs-Energie: einmal pro Tick, aber NICHT am rohen dy des Ticks. Hoehe kommt in
+        // Spruengen (die Nase nimmt eine ganze Stufe in einem Tick), Vortrieb dagegen stetig —
+        // die volle Lageenergie einer Stufe gegen die Momentangeschwindigkeit gerechnet ergibt
+        // eine Rechnung, die im Kriechtempo niemand bezahlen kann: das Auto bleibt an einer
+        // Treppe fuer immer stehen, egal wie klein slope-resistance ist.
+        // Deshalb wird die Hoehendifferenz als Schuld gefuehrt und ueber eine Fahrzeuglaenge
+        // abgetragen: je Tick faellt der Anteil an, der auf die gefahrene Strecke entfaellt.
+        // Das ist ANTEILIG und nicht auf 45 Grad gedeckelt — sonst faehrt das Auto nach jeder
+        // einzelnen Stufe weiter wie an einer Dauersteigung (Abzug g x slope-resistance je Tick,
+        // unabhaengig vom Tempo) und das Gaspedal fuehlt sich tot an. Am Berg konvergiert die
+        // Schuld von selbst auf die echte Steigung: was je Block dazukommt, wird je Block faellig.
+        // downhill-assist bleibt ein Arcade-Bonus und skaliert mit dem verrechneten Gefaelle
+        // (volle Wirkung ab 0,5 Block). Nicht bei echtem Fall (fallBefore == 0 UND
+        // fallSpeed == 0): eine Landung aus einem Fall darf keinen Schub erzeugen.
         if (wantsMove && fallBefore == 0 && car.getFallSpeed() == 0) {
-            double dy = targetY - loc.getY();
+            double travelled = Math.hypot(targetX - loc.getX(), targetZ - loc.getZ());
+            double rise = targetY - loc.getY();
+            double debt = car.getSlopeDebt() + rise;
+            double dy = debt * clamp(travelled / SLOPE_SPREAD, 0.0, 1.0);
+            debt -= dy;
+            if (rise <= 0.0) {
+                debt *= SLOPE_DEBT_FADE;
+            }
+            car.setSlopeDebt(debt);
             double speed = Math.hypot(vx, vz);
             if (dy != 0 && speed > 1.0e-9) {
                 double v2 = vx * vx + vz * vz;
-                double v2New = v2 - 2.0 * GRAVITY_ACCEL * config.slopeResistance * dy;
+                // vx/vz sind die WAAGERECHTE Komponente, die Lageenergie haengt an der Bahn:
+                // v_bahn = v_horizontal / cos(Neigung), also faellt die Umrechnung mit cos².
+                // Ohne den Faktor kostet eine 45-Grad-Steigung doppelt so viel wie physikalisch
+                // richtig — flaches Gelaende merkt davon nichts (cos² ~ 1), steiles sehr wohl.
+                double slopeCos2 = travelled > 1.0e-9
+                        ? (travelled * travelled) / (travelled * travelled + dy * dy) : 1.0;
+                double v2New = v2 - 2.0 * GRAVITY_ACCEL * config.slopeResistance * dy * slopeCos2;
                 if (v2New <= 0) {
                     // kompletter Energieverlust am Berg: Totalstopp
                     vx = 0;
@@ -350,6 +401,12 @@ public final class DriveTask extends BukkitRunnable {
                     vz *= scale;
                 }
             }
+        } else if (fallBefore != 0 || car.getFallSpeed() != 0) {
+            // Nur im echten Fall wird die Schuld gestrichen — eine alte darf die Landung nicht
+            // treffen. Beim blossen Stillstand bleibt sie stehen: sonst schenkt schon ein
+            // kurzes Loslassen des Gases die ganze aufgelaufene Steigungsenergie (der
+            // Standfest-Hartschnapp greift nur ohne Pedal, danach ist wantsMove false).
+            car.setSlopeDebt(0);
         }
         // Harte Landung nur nach echtem Fall: Querschwung bricht ein, Aufsetzen ist hörbar
         if (fallBefore > LANDING_SOUND_MIN_FALL && car.getFallSpeed() == 0 && !gravity.snapped()) {
@@ -393,27 +450,43 @@ public final class DriveTask extends BukkitRunnable {
         }
 
         // Modell-Neigung und Quer-Neigung, beides EMA-geglaettet. Reine Optik — die Physik
-        // bleibt davon unberuehrt. Pitch = Steigung (Vorzeichen nach Sichtpruefung geflippt)
-        // plus Squat/Dive aus der Pedal-Kraft (Gas: Nase hoch, Bremse: Nase runter); Roll =
-        // Tempo × Drehrate. Sichtpruefungs-Stand: Steigungs-Term und Roll korrekt, der
-        // Pedal-Term stand Kopf und ist daher invertiert (Minus davor!) — nicht die Achsen
-        // pauschal flippen.
-        double horizDist = Math.hypot(targetX - loc.getX(), targetZ - loc.getZ());
-        double pitchGoal = (grounded && horizDist > 1.0e-9
-                ? -Math.toDegrees(Math.atan2(targetY - loc.getY(), horizDist)) : 0.0)
+        // bleibt davon unberuehrt. Pitch = Achslage (siehe axlePitchDeg) plus Squat/Dive aus der
+        // Pedal-Kraft (Gas: Nase hoch, Bremse: Nase runter); Roll = Tempo × Drehrate.
+        // Sichtpruefungs-Stand: Steigungs-Term und Roll korrekt, der Pedal-Term stand Kopf und
+        // ist daher invertiert (Minus davor!) — nicht die Achsen pauschal flippen.
+        boolean showWheels = config.debugWheels && tickCount % 2 == 0;
+        Wheels stance = probeWheels(world, targetX, targetY, targetZ, yaw, showWheels);
+        // Nicken aus der Achslage, Wanken aus der Achsverschraenkung plus dem Kurven-Anteil.
+        // VORZEICHEN: beide Gelaende-Terme sind headless nicht pruefbar — stimmt der Drehsinn im
+        // Spiel nicht, hier das Minus kippen (nicht die Quaternion-Achsen tauschen).
+        double pitchGoal = -Math.toDegrees(Math.atan2(
+                stance.frontTop() - stance.rearTop(), AXLE_SPAN))
                 - clamp(longForce * PITCH_ACCEL_DEG, -PITCH_ACCEL_MAX_DEG, PITCH_ACCEL_MAX_DEG);
         double pitch = clamp(car.getLastPitchDeg() + (pitchGoal - car.getLastPitchDeg()) * 0.3, -25.0, 25.0);
-        double rollGoal = clamp(-200.0 * Math.hypot(vx, vz) * Math.toRadians(car.getYawVel()), -12.0, 12.0);
+        double rollGoal = clamp(-Math.toDegrees(Math.atan2(
+                stance.rightTop() - stance.leftTop(), TRACK_WIDTH))
+                - 200.0 * Math.hypot(vx, vz) * Math.toRadians(car.getYawVel()), -12.0, 12.0);
         double roll = clamp(car.getLastRollDeg() + (rollGoal - car.getLastRollDeg()) * 0.3, -12.0, 12.0);
-        if (Math.abs(pitch - car.getLastPitchDeg()) > 0.5 || Math.abs(roll - car.getLastRollDeg()) > 0.5) {
+        // Karosserie sitzt zwischen den Achsen, nicht auf der hoechsten Stuetze: beim Herunter-
+        // fahren einer Stufe haelt die Mitte das Fahrniveau oben, waehrend die Vorderachse schon
+        // unten steht — ohne diesen Versatz schwebt das Modell sichtbar. Reine Optik, die
+        // Kollisionshoehe (und damit Sitz und Klick-Hitbox) bleibt, wo die Physik sie hat.
+        double axleMean = mid(stance.frontTop(), stance.rearTop());
+        double sinkGoal = axleMean > Double.NEGATIVE_INFINITY
+                ? clamp(axleMean - targetY, -MODEL_MAX_SINK, 0.0) : 0.0;
+        double sink = clamp(car.getLastSinkOffset() + (sinkGoal - car.getLastSinkOffset()) * 0.3,
+                -MODEL_MAX_SINK, 0.0);
+        if (Math.abs(pitch - car.getLastPitchDeg()) > 0.5 || Math.abs(roll - car.getLastRollDeg()) > 0.5
+                || Math.abs(sink - car.getLastSinkOffset()) > 0.02) {
             car.getModel().setTransformation(new Transformation(
-                    new Vector3f(0f, CarManager.MODEL_Y_OFFSET, 0f),
+                    new Vector3f(0f, (float) (CarManager.MODEL_Y_OFFSET + sink), 0f),
                     new Quaternionf().rotationX((float) Math.toRadians(pitch))
                             .rotateZ((float) Math.toRadians(roll)),
                     new Vector3f(CarManager.MODEL_SCALE, CarManager.MODEL_SCALE, CarManager.MODEL_SCALE),
                     new Quaternionf()));
             car.setLastPitchDeg(pitch);
             car.setLastRollDeg(roll);
+            car.setLastSinkOffset(sink);
         }
 
         if (driver != null) {
@@ -541,7 +614,7 @@ public final class DriveTask extends BukkitRunnable {
         } else if (right) {
             diff = allowed;
         } else if (driver != null && prefs.mouseSteer(driver.getUniqueId())) {
-            diff = wrapDeg(driver.getLocation().getYaw() - yaw);
+            diff = mouseSteer(driver.getLocation().getYaw(), yaw, allowed);
         } else {
             diff = 0;
         }
@@ -549,6 +622,32 @@ public final class DriveTask extends BukkitRunnable {
             diff = -diff;
         }
         return diff;
+    }
+
+    /**
+     * Mauslenkung als Lenkrad: der Blickwinkel gegenueber der FAHRZEUGACHSE wird auf den
+     * Lenkeinschlag abgebildet. Beide Achsenrichtungen sind dabei "geradeaus" — nach vorn UND
+     * nach hinten schauen laesst das Rad gerade, quer (MOUSE_FULL_LOCK_DEG = 90°) liegt es voll
+     * an, dazwischen linear; innerhalb der Totzone passiert nichts. Dadurch gilt dieselbe
+     * Abbildung, egal ob der Fahrer nach vorn blickt oder beim Rueckwaertsfahren ueber die
+     * Schulter — ohne sie stand das Lenkrad beim Zurueckschauen sofort am Anschlag, weil der
+     * Rohwinkel (rund 180°) direkt gegen das Limit gedeckelt wurde.
+     * Ob "mein Blick nach links" beim Rueckwaertsfahren auch nach links lenkt, entscheidet
+     * anschliessend die Pref reverse_invert — nicht diese Abbildung.
+     */
+    private double mouseSteer(float playerYaw, float carYaw, double allowed) {
+        double diff = wrapDeg(playerYaw - carYaw);
+        double magnitude = Math.abs(diff);
+        if (magnitude > 90.0) {
+            // hinter der Quere geht es wieder Richtung geradeaus: 180° = Blick nach hinten
+            magnitude = 180.0 - magnitude;
+        }
+        if (magnitude <= MOUSE_DEADZONE_DEG) {
+            return 0;
+        }
+        double fraction = Math.min(1.0,
+                (magnitude - MOUSE_DEADZONE_DEG) / (MOUSE_FULL_LOCK_DEG - MOUSE_DEADZONE_DEG));
+        return Math.signum(diff) * fraction * allowed;
     }
 
     /**
@@ -583,34 +682,29 @@ public final class DriveTask extends BukkitRunnable {
             if (nearOtherCar(others, sx, sz)) {
                 return new StepResult(true, freeX, curY, freeZ, sx, sz, 3, dist);
             }
-            double obstacleTop = Double.NEGATIVE_INFINITY;
-            double obstaclePx = sx;
-            double obstaclePz = sz;
-            int by = floor(curY);
-            for (double fl : GRID_LONG) {
-                for (double sl : GRID_LAT) {
-                    double px = sx + fwdX * fl + sideX * sl;
-                    double pz = sz + fwdZ * fl + sideZ * sl;
-                    double columnTop = columnObstacleTop(world, floor(px), by, floor(pz));
-                    if (columnTop > obstacleTop) {
-                        obstacleTop = columnTop;
-                        obstaclePx = px;
-                        obstaclePz = pz;
-                    }
+            // Zuerst die Achsen: sie tragen das Auto, also bestimmen sie das Fahrniveau.
+            Probe support = footprintObstacle(world, SUPPORT_LONG, SUPPORT_LAT, sx, sz, curY,
+                    fwdX, fwdZ, sideX, sideZ, stepX, stepZ);
+            if (support.top() > curY + MAX_STEP + 1.0e-9) {
+                return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist);
+            }
+            if (support.top() > curY + 1.0e-4) {
+                if (!canStandAt(world, sx, support.top(), sz, fwdX, fwdZ, sideX, sideZ, stepX, stepZ)) {
+                    return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist);
                 }
+                curY = support.top();
             }
-            if (obstacleTop > curY + MAX_STEP) {
-                return new StepResult(true, freeX, curY, freeZ, obstaclePx, obstaclePz, axis, dist);
+            // Dann die Karosserie auf dem so gefundenen Niveau: die Stossstange steht 1,25
+            // Bloecke vor der Mitte und trifft die Wand vor den Raedern.
+            Probe body = footprintObstacle(world, GRID_LONG, GRID_LAT, sx, sz, curY,
+                    fwdX, fwdZ, sideX, sideZ, stepX, stepZ);
+            if (body.top() > curY + MAX_STEP + 1.0e-9) {
+                return new StepResult(true, freeX, curY, freeZ, body.x(), body.z(), axis, dist);
             }
-            if (obstacleTop > curY + 1.0e-4) {
-                if (!canStandAt(world, sx, obstacleTop, sz, fwdX, fwdZ, sideX, sideZ)) {
-                    return new StepResult(true, freeX, curY, freeZ, obstaclePx, obstaclePz, axis, dist);
-                }
-                curY = obstacleTop;
-            }
-            // Gelaendeverfolgung nach unten: kurze Abstiege nimmt die Mitte direkt mit,
-            // sonst fliegt das Auto bei mehreren Zellen pro Tick den Abhang ballistisch herab.
-            curY = followGroundDown(world, sx, sz, curY, canSnapDown);
+            // Gelaendeverfolgung nach unten: kurze Abstiege nimmt das Auto direkt mit,
+            // sonst fliegt es bei mehreren Zellen pro Tick den Abhang ballistisch herab.
+            curY = followGroundDown(world, sx, sz, curY, canSnapDown,
+                    fwdX, fwdZ, sideX, sideZ, stepX, stepZ);
             freeX = sx;
             freeZ = sz;
         }
@@ -642,8 +736,57 @@ public final class DriveTask extends BukkitRunnable {
         return -clamp(restitution * impact, 0.0, CRASH_REBOUND_MAX) * Math.signum(vAxis);
     }
 
-    /** Boden bei (x,z) auf Hoehe curY oder bis MAX_STEP_DOWN darunter; sonst unveraendert. */
-    private double followGroundDown(World world, double x, double z, double curY, boolean canSnapDown) {
+    /**
+     * Gelaendeverfolgung nach unten ueber den GANZEN Footprint: das Auto sinkt nur so weit, wie
+     * die hoechste Stuetze darunter es zulaesst — es ist ein starrer Koerper, kein Punkt. Wuerde
+     * nur die Mitte zaehlen, fiele es an jeder Rampe sofort wieder auf das Niveau seiner Mitte
+     * zurueck und muesste die Steigung mit der Nase immer wieder von unten nehmen; ab etwa 5/8
+     * Block Anstieg je Block reisst das MAX_STEP und die Rampe blockiert.
+     * Rasterpunkte hinter der Fahrtrichtung zaehlen nicht (siehe footprintObstacle), sonst haelt
+     * die gerade verlassene Kante das Auto oben fest.
+     */
+    private double followGroundDown(World world, double sx, double sz, double curY, boolean canSnapDown,
+                                    double fwdX, double fwdZ, double sideX, double sideZ,
+                                    double dirX, double dirZ) {
+        double best = Double.NEGATIVE_INFINITY;
+        for (double fl : SUPPORT_LONG) {
+            for (double sl : SUPPORT_LAT) {
+                double ox = fwdX * fl + sideX * sl;
+                double oz = fwdZ * fl + sideZ * sl;
+                if (ox * dirX + oz * dirZ < -1.0e-9) {
+                    continue;
+                }
+                double top = groundBelow(world, sx + ox, sz + oz, curY, canSnapDown);
+                if (top > best) {
+                    best = top;
+                    if (best >= curY - 1.0e-9) {
+                        return best; // hoeher als das aktuelle Niveau geht nicht, Rest sparen
+                    }
+                }
+            }
+        }
+        return best > Double.NEGATIVE_INFINITY ? best : curY;
+    }
+
+    /** Hoechste Oberkante unter (x,z), die hoechstens {@code reach} unter {@code y} liegt;
+     *  -Unendlich, wenn dort nichts traegt. Zellenweise, damit auch Teilblock-Oberkanten zaehlen. */
+    private double contactGround(World world, double x, double z, double y, double reach) {
+        int from = floor(y - 0.05);
+        int to = floor(y - reach);
+        for (int by = from; by >= to; by--) {
+            Block block = world.getBlockAt(floor(x), by, floor(z));
+            if (supportsCar(block)) {
+                double top = supportTop(block, by);
+                if (top <= y + 0.05 && y - top <= reach) {
+                    return top;
+                }
+            }
+        }
+        return Double.NEGATIVE_INFINITY;
+    }
+
+    /** Boden bei (x,z) auf Hoehe curY oder bis MAX_STEP_DOWN darunter; sonst -Unendlich. */
+    private double groundBelow(World world, double x, double z, double curY, boolean canSnapDown) {
         int by = floor(curY - 0.05);
         Block direct = world.getBlockAt(floor(x), by, floor(z));
         if (supportsCar(direct)) {
@@ -653,7 +796,7 @@ public final class DriveTask extends BukkitRunnable {
             }
         }
         if (!canSnapDown) {
-            return curY;
+            return Double.NEGATIVE_INFINITY;
         }
         for (double d = 0.2; d <= MAX_STEP_DOWN; d += 0.2) {
             int sy = floor(curY - d - 0.05);
@@ -665,57 +808,96 @@ public final class DriveTask extends BukkitRunnable {
                 }
             }
         }
-        return curY;
+        return Double.NEGATIVE_INFINITY;
+    }
+
+    /** Hoechstes Hindernis unter dem Footprint samt Fundort (fuer den Aufprall-Hebel). */
+    private record Probe(double top, double x, double z) { }
+
+    /**
+     * Sondiert ein yaw-ausgerichtetes Punktraster an (sx,sz) auf Niveau curY — je nach
+     * uebergebenem Raster die Karosserie (blockiert) oder die Aufstandsflaeche (traegt).
+     * Rasterpunkte HINTER der Bewegungsrichtung zaehlen nicht: aus einer Lage, in die das Auto
+     * hineingefahren ist, muss es immer wieder herausfahren koennen — sonst sperrt genau die
+     * Kante, die es gerade heruntergefahren ist, es fuer immer ein (Abstieg zwischen MAX_STEP
+     * und MAX_STEP_DOWN: das Heck-Sample steht danach vor einer Kante ueber MAX_STEP).
+     */
+    private Probe footprintObstacle(World world, double[] longs, double[] lats,
+                                    double sx, double sz, double curY,
+                                    double fwdX, double fwdZ, double sideX, double sideZ,
+                                    double dirX, double dirZ) {
+        double top = Double.NEGATIVE_INFINITY;
+        double hitX = sx;
+        double hitZ = sz;
+        for (double fl : longs) {
+            for (double sl : lats) {
+                double ox = fwdX * fl + sideX * sl;
+                double oz = fwdZ * fl + sideZ * sl;
+                if (ox * dirX + oz * dirZ < -1.0e-9) {
+                    continue;
+                }
+                double columnTop = columnObstacleTop(world, floor(sx + ox), curY, floor(sz + oz));
+                if (columnTop > top) {
+                    top = columnTop;
+                    hitX = sx + ox;
+                    hitZ = sz + oz;
+                }
+            }
+        }
+        return new Probe(top, hitX, hitZ);
     }
 
     /**
-     * Oberkante des hoechsten Hindernisses in der Fuss-Zelle (by) eines Wegpunkts.
-     * Luft, Wasser und passierbare Bloecke gelten als frei; Lava und jede Belegung der
-     * Kopf-Zelle (by+1) sind unüberwindbar (+Unendlich), alles andere ist ggf. eine Stufe.
+     * Oberkante des hoechsten Hindernisses in der Saeule (bx,bz), gesehen von Niveau curY.
+     * Betrachtet wird jede Zelle von der Fuss-Zelle bis floor(curY + MAX_STEP): was dort an
+     * Kollisionsform steht, ist eine Stufe — und was ueber curY + MAX_STEP hinausragt, ist eine
+     * Wand (+Unendlich). Damit zaehlt die ECHTE Hoehe des Hindernisses und nicht die Zelle, in
+     * der es zufaellig sitzt: steht das Auto auf einer gekappten Oberkante (Ackerland, Schlamm,
+     * Schnee, Stufen), ragt der Nachbarbelag in die Kopf-Zelle, ohne deshalb unueberwindbar zu
+     * sein. Luft, Wasser und passierbare Bloecke sind frei, Lava ist immer Wand.
      */
-    private double columnObstacleTop(World world, int bx, int by, int bz) {
-        Block feet = world.getBlockAt(bx, by, bz);
-        Material feetType = feet.getType();
-        if (feetType == Material.LAVA) {
-            return Double.POSITIVE_INFINITY;
-        }
+    private double columnObstacleTop(World world, int bx, double curY, int bz) {
+        double reach = curY + MAX_STEP;
+        int from = floor(curY);
+        int to = floor(reach + 1.0e-9);
         double top = Double.NEGATIVE_INFINITY;
-        if (!feetType.isAir() && feetType != Material.WATER && !feet.isPassable()) {
-            top = supportTop(feet, by);
-        }
-        Block head = world.getBlockAt(bx, by + 1, bz);
-        Material headType = head.getType();
-        if (!headType.isAir() && headType != Material.WATER && !head.isPassable()) {
-            return Double.POSITIVE_INFINITY;
+        for (int by = from; by <= to; by++) {
+            Block block = world.getBlockAt(bx, by, bz);
+            Material type = block.getType();
+            if (type == Material.LAVA) {
+                return Double.POSITIVE_INFINITY;
+            }
+            if (type.isAir() || type == Material.WATER || block.isPassable()) {
+                continue;
+            }
+            double blockTop = supportTop(block, by);
+            if (blockTop > reach + 1.0e-9) {
+                return Double.POSITIVE_INFINITY;
+            }
+            if (blockTop > top) {
+                top = blockTop;
+            }
         }
         return top;
     }
 
-    /** Prueft nach einem Stufenaufstieg, ob der ganze Footprint auf dem Zielniveau frei steht. */
+    /**
+     * Prueft nach einem Stufenaufstieg, ob der Footprint auf dem Zielniveau frei steht: dieselbe
+     * Sondierung, nur vom Zielniveau aus. Das verschiebt das Suchfenster nach oben und findet
+     * damit Hindernisse, die von unten noch gar nicht sichtbar waren — eine niedrige Decke ueber
+     * der Stufe zum Beispiel.
+     * <p>Verboten ist dort aber NUR eine Wand (+Unendlich, also alles ueber Zielniveau +
+     * MAX_STEP). Eine weitere befahrbare Stufe ist kein Grund, die aktuelle nicht zu nehmen —
+     * genau daran sind Treppen gescheitert: sobald die Nase (bei Yaw sogar bis 1,54 Bloecke
+     * voraus) ueber der uebernaechsten Stufe stand, verweigerte der alte Test {@code top <= y}
+     * den Aufstieg auf die naechste. Das Auto rammte stattdessen die Kante, bekam Drehimpuls
+     * statt Hoehe und kam nur im Kriechtempo und mit Ruckeln hoch.
+     */
     private boolean canStandAt(World world, double x, double y, double z,
-                               double fwdX, double fwdZ, double sideX, double sideZ) {
-        for (double fl : GRID_LONG) {
-            for (double sl : GRID_LAT) {
-                int bx = floor(x + fwdX * fl + sideX * sl);
-                int bz = floor(z + fwdZ * fl + sideZ * sl);
-                int fy = floor(y);
-                Block lower = world.getBlockAt(bx, fy, bz);
-                Material lowerType = lower.getType();
-                if (lowerType == Material.LAVA) {
-                    return false;
-                }
-                if (!lowerType.isAir() && lowerType != Material.WATER && !lower.isPassable()
-                        && supportTop(lower, fy) > y + 1.0e-4) {
-                    return false;
-                }
-                Block upper = world.getBlockAt(bx, fy + 1, bz);
-                Material upperType = upper.getType();
-                if (!upperType.isAir() && upperType != Material.WATER && !upper.isPassable()) {
-                    return false;
-                }
-            }
-        }
-        return true;
+                               double fwdX, double fwdZ, double sideX, double sideZ,
+                               double dirX, double dirZ) {
+        return footprintObstacle(world, GRID_LONG, GRID_LAT, x, z, y,
+                fwdX, fwdZ, sideX, sideZ, dirX, dirZ).top() <= y + MAX_STEP + 1.0e-9;
     }
 
     private boolean nearOtherCar(List<Location> others, double x, double z) {
@@ -764,34 +946,34 @@ public final class DriveTask extends BukkitRunnable {
      * ballistische Loser-Phase. Groessere Luecken starten den ballistischen Fall bis
      * max-fall-speed. Die Landung snappt auf die echte Blockoberkante (Slab-/Pfad-Hoehe).
      */
-    private GravityResult applyGravity(World world, double x, double y, double z, Car car, boolean moved) {
-        int gy = floor(y - 0.05);
-        Block below = world.getBlockAt(floor(x), gy, floor(z));
-        if (supportsCar(below)) {
-            double groundTop = supportTop(below, gy);
+    private GravityResult applyGravity(World world, double x, double y, double z, float carYaw,
+                                       Car car, boolean moved) {
+        // Getragen wird das Auto von seiner AUFSTANDSFLAECHE, nicht von seiner Mitte — dieselbe
+        // Regel wie beim Fahrniveau. Auf einer Treppe steht die Vorderachse eine Stufe hoeher,
+        // waehrend unter der Mitte die Luft vor der Stufenkante liegt: mit der Mitte allein zog
+        // die Schwerkraft das Auto nach jedem Aufstieg sofort wieder herunter, und die
+        // Stossstange rammte anschliessend die uebernaechste Stufe.
+        double top = supportTopBelow(world, x, z, y, carYaw);
+        if (top > Double.NEGATIVE_INFINITY) {
             // Kurze Reststrecke (z. B. nach Step-down) direkt einrasten; aus dem Block herausheben
-            if (y - groundTop < 0.4) {
+            if (y - top < 0.4) {
                 car.setFallSpeed(0);
-                return new GravityResult(groundTop, false);
+                return new GravityResult(top, false);
             }
-            return new GravityResult(y, false);
-        }
-
-        // Step-Down: vorher geerdet (kein aktiver Fall) und kurz darunter stuetzt Boden
-        if (car.getFallSpeed() == 0 && moved) {
-            for (double d = 0.2; d <= MAX_STEP_DOWN; d += 0.2) {
-                int sy = floor(y - d - 0.05);
-                Block b2 = world.getBlockAt(floor(x), sy, floor(z));
-                if (supportsCar(b2)) {
-                    double top = supportTop(b2, sy);
-                    if (top <= y && y - top <= MAX_STEP_DOWN) {
-                        return new GravityResult(top, true);
-                    }
-                }
+            // Step-Down: vorher geerdet (kein aktiver Fall) und kurz darunter stuetzt Boden
+            if (car.getFallSpeed() == 0 && moved) {
+                return new GravityResult(top, true);
             }
         }
 
-        double fallSpeed = Math.min(car.getFallSpeed() + GRAVITY_ACCEL, config.maxFallSpeed);
+        // Im Wasser baut sich KEINE Gravitation mehr auf: die Sinkgeschwindigkeit laeuft
+        // asymptotisch auf max-sink-speed zu (Auftrieb + Widerstand). Wuerde erst die volle
+        // Erdbeschleunigung addiert und danach nur der Ueberschuss gedaempft, laege der Fixpunkt
+        // der Folge weit ueber dem konfigurierten Wert (gemessen rund 30 statt 9 km/h).
+        boolean inWater = world.getBlockAt(floor(x), floor(y), floor(z)).getType() == Material.WATER;
+        double fallSpeed = inWater
+                ? sinkSpeed(car.getFallSpeed())
+                : Math.min(car.getFallSpeed() + GRAVITY_ACCEL, config.maxFallSpeed);
         double newY = y;
         double remaining = fallSpeed;
         while (remaining > 1.0e-9) {
@@ -804,14 +986,171 @@ public final class DriveTask extends BukkitRunnable {
                 return new GravityResult(supportTop(b, fy), false);
             }
             newY = candidate;
-            // Wasser traegt nicht, bremst aber den Fall asymptotisch Richtung max-sink-speed
+            // Eintauchen mitten im Tick: ab hier bremst das Wasser schon diesen Fall
             if (world.getBlockAt(floor(x), floor(candidate), floor(z)).getType() == Material.WATER) {
-                fallSpeed = config.maxSinkSpeed + (fallSpeed - config.maxSinkSpeed) * 0.85;
+                fallSpeed = sinkSpeed(fallSpeed);
+                remaining = Math.min(remaining, fallSpeed);
             }
             remaining -= step;
         }
         car.setFallSpeed(fallSpeed);
         return new GravityResult(newY, false);
+    }
+
+    /**
+     * Aufstandslage der vier Raeder. {@code -Unendlich} heisst: das Rad traegt nicht.
+     * {@code carrying}/{@code gripSum} speisen den Grip, die vier Achs- und Seitenhoehen die
+     * Modell-Optik (Nicken, Wanken, Absetzen der Karosserie).
+     */
+    private record Wheels(int carrying, double gripSum, double frontTop, double rearTop,
+                          double leftTop, double rightTop, double tipX, double tipZ) {
+
+        /** Weniger als drei tragende Raeder heisst: der Schwerpunkt liegt ausserhalb der
+         *  Auflageflaeche. Ein Punkt traegt gar nicht, zwei bilden nur eine Kippachse — egal ob
+         *  laengs, quer oder diagonal. Das Auto balanciert dann nicht, es kippt ab. */
+        boolean stable() {
+            return carrying >= 3;
+        }
+    }
+
+    /**
+     * Sondiert die vier Raeder und verbindet sie achsweise. Jedes Rad sucht seinen Boden bis zwei
+     * Stufen unter dem Fahrniveau (auf einer Treppe steht die Hinterachse so tief); je Achse gilt
+     * dann der Federweg: wer mehr als AXLE_TRAVEL unter seinem Gegenstueck haengt, hebt ab und
+     * traegt nicht mehr. Ohne diese Kopplung verwindet sich eine Achse um einen ganzen Block —
+     * ein Rad auf dem Bordstein, das andere auf der Strasse, und beide melden Grip.
+     * <p>Zeichnet dabei die Rad-Anzeige, wenn {@code draw}: gruen = Rad traegt (Punkt auf seiner
+     * Aufstandshoehe), rot = Rad haengt (Punkt auf Achshoehe), blau = die acht Karosserie-Punkte
+     * auf Fahrniveau, die gegen Waende blockieren.
+     */
+    private Wheels probeWheels(World world, double x, double y, double z, float carYaw, boolean draw) {
+        double yawRad = Math.toRadians(carYaw);
+        double fwdX = -Math.sin(yawRad);
+        double fwdZ = Math.cos(yawRad);
+        double sideX = fwdZ;
+        double sideZ = -fwdX;
+        // Reihenfolge: 0/1 = Hinterachse (-0,9), 2/3 = Vorderachse (+0,9); je Achse erst die
+        // Seite bei -0,7 quer, dann +0,7.
+        // Bezug der Rad-Auflage ist der Boden unter der MITTE: von dort darf ein Rad noch
+        // MAX_STEP_DOWN tiefer stehen. Auf einer Treppe liegt die Hinterachse zwei Stufen unter
+        // dem Fahrniveau, aber nur eine unter dem Boden der Mitte — sie traegt also. Ueber einem
+        // Loch und im freien Fall findet die Mitte dagegen nichts, dann bleibt das Fahrniveau
+        // der Bezug und es traegt nur, was direkt darunter liegt (sonst greift ein Rad im Fall
+        // nach Boden, der zwei Bloecke tiefer liegt).
+        double centre = contactGround(world, x, z, y, MAX_STEP_DOWN);
+        double reach = (centre > Double.NEGATIVE_INFINITY ? y - centre : 0.0) + MAX_STEP_DOWN;
+        double[] tops = new double[4];
+        double[] wx = new double[4];
+        double[] wz = new double[4];
+        int i = 0;
+        for (double wLong : WHEEL_LONG) {
+            for (double wLat : WHEEL_LAT) {
+                wx[i] = x + fwdX * wLong + sideX * wLat;
+                wz[i] = z + fwdZ * wLong + sideZ * wLat;
+                tops[i] = contactGround(world, wx[i], wz[i], y, reach);
+                i++;
+            }
+        }
+        double[] axleTop = new double[2];
+        for (int axle = 0; axle < 2; axle++) {
+            int a = axle * 2;
+            double high = Math.max(tops[a], tops[a + 1]);
+            if (tops[a] < high - AXLE_TRAVEL) {
+                tops[a] = Double.NEGATIVE_INFINITY;
+            }
+            if (tops[a + 1] < high - AXLE_TRAVEL) {
+                tops[a + 1] = Double.NEGATIVE_INFINITY;
+            }
+            axleTop[axle] = mid(tops[a], tops[a + 1]);
+        }
+        int carrying = 0;
+        double gripSum = 0.0;
+        for (int w = 0; w < 4; w++) {
+            boolean carries = tops[w] > Double.NEGATIVE_INFINITY;
+            if (carries) {
+                carrying++;
+                gripSum += gripCalculator.gripFor(world.getBlockAt(floor(wx[w]),
+                        floor(tops[w] - 0.05), floor(wz[w])).getType());
+            }
+            if (draw) {
+                double axle = axleTop[w / 2];
+                double dotY = carries ? tops[w] : (axle > Double.NEGATIVE_INFINITY ? axle : y);
+                world.spawnParticle(Particle.DUST, wx[w], dotY + 0.08, wz[w], 1, 0.0, 0.0, 0.0, 0.0,
+                        new Particle.DustOptions(carries ? Color.LIME : Color.RED, 0.8f));
+            }
+        }
+        if (draw) {
+            for (double fl : GRID_LONG) {
+                for (double sl : GRID_LAT) {
+                    if (fl == 0.0 && sl == 0.0) {
+                        continue;
+                    }
+                    world.spawnParticle(Particle.DUST, x + fwdX * fl + sideX * sl, y + 0.08,
+                            z + fwdZ * fl + sideZ * sl, 1, 0.0, 0.0, 0.0, 0.0,
+                            new Particle.DustOptions(Color.AQUA, 0.5f));
+                }
+            }
+        }
+        // Kipprichtung: von der Auflageflaeche weg. Mit drei oder vier Raedern liegt der
+        // Schwerpunkt drin, dann gibt es nichts zu kippen.
+        double tipX = 0.0;
+        double tipZ = 0.0;
+        if (carrying > 0 && carrying < 3) {
+            double sumX = 0.0;
+            double sumZ = 0.0;
+            for (int w = 0; w < 4; w++) {
+                if (tops[w] > Double.NEGATIVE_INFINITY) {
+                    sumX += wx[w];
+                    sumZ += wz[w];
+                }
+            }
+            double offX = x - sumX / carrying;
+            double offZ = z - sumZ / carrying;
+            double len = Math.hypot(offX, offZ);
+            if (len > 1.0e-6) {
+                tipX = offX / len;
+                tipZ = offZ / len;
+            }
+        }
+        return new Wheels(carrying, gripSum, axleTop[1], axleTop[0],
+                mid(tops[1], tops[3]), mid(tops[0], tops[2]), tipX, tipZ);
+    }
+
+    /** Mittel zweier Aufstandshoehen; haengt eine, zaehlt die andere allein. */
+    private double mid(double a, double b) {
+        if (a <= Double.NEGATIVE_INFINITY) {
+            return b;
+        }
+        if (b <= Double.NEGATIVE_INFINITY) {
+            return a;
+        }
+        return (a + b) / 2.0;
+    }
+
+    /** Hoechste Stuetze unter der Aufstandsflaeche, hoechstens MAX_STEP_DOWN unter y;
+     *  -Unendlich, wenn dort nichts traegt (dann faellt das Auto). */
+    private double supportTopBelow(World world, double x, double z, double y, float carYaw) {
+        double yawRad = Math.toRadians(carYaw);
+        double fwdX = -Math.sin(yawRad);
+        double fwdZ = Math.cos(yawRad);
+        double sideX = fwdZ;
+        double sideZ = -fwdX;
+        double best = Double.NEGATIVE_INFINITY;
+        for (double fl : SUPPORT_LONG) {
+            for (double sl : SUPPORT_LAT) {
+                double found = contactGround(world, x + fwdX * fl + sideX * sl,
+                        z + fwdZ * fl + sideZ * sl, y, MAX_STEP_DOWN);
+                if (found > best) {
+                    best = found;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Sinkgeschwindigkeit im Wasser: naehert sich max-sink-speed an, von oben wie von unten. */
+    private double sinkSpeed(double fallSpeed) {
+        return config.maxSinkSpeed + (fallSpeed - config.maxSinkSpeed) * WATER_SINK_DAMPING;
     }
 
     /** Absolute Oberkante der Kollisionsform eines Blocks (volle Bloecke = cellY+1, Slab = +0.5). */
@@ -842,24 +1181,6 @@ public final class DriveTask extends BukkitRunnable {
             return false;
         }
         return !block.isPassable();
-    }
-
-    /** Rad-Auflage: Boden auf Fahrzeug-Niveau (Kontaktabstand < 0.05) ODER maximal einen
-     *  Block tiefer (Federungs-Toleranz, damit z. B. ein Rad neben einem eine Zeile
-     *  tieferen Gehweg weiter traegt — erst darueber gilt das Rad als haengend). */
-    private Block wheelSupport(org.bukkit.World world, int wx, int gy, int wz, double carY) {
-        Block level = world.getBlockAt(wx, gy, wz);
-        if (supportsCar(level) && carY - supportTop(level, gy) < 0.05) {
-            return level;
-        }
-        Block lower = world.getBlockAt(wx, gy - 1, wz);
-        if (supportsCar(lower)) {
-            double drop = carY - supportTop(lower, gy - 1);
-            if (drop >= 0.05 && drop <= 1.05) {
-                return lower;
-            }
-        }
-        return null;
     }
 
     private void playUndersteerSound(Car car, World world, Location loc) {

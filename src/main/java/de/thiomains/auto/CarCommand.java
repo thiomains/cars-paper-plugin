@@ -437,8 +437,9 @@ public final class CarCommand implements BasicCommand {
                     return List.of();
                 }
                 if (NUMBER_KEYS.contains(key)) {
-                    return filter(List.of(String.valueOf(CarConfig.clampHumanValue(key,
-                            plugin.getConfig().getDouble(key)))), args[2]);
+                    // Bewusst kein Vorschlag: der aktuelle Wert stand sonst schon im Feld und
+                    // wurde beim Tippen mit uebernommen. Lesen geht ueber /car config <key>.
+                    return List.of();
                 }
                 if (BOOL_KEYS.contains(key)) {
                     return filter(List.of("true", "false"), args[2]);

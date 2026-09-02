@@ -90,9 +90,8 @@ public final class CarListener implements Listener {
             logger.info("[Debug] Einsteigen: spieler=" + player.getName()
                     + " clicked=" + clicked.getType() + " mounted=" + mounted + " confirmed=" + confirmed);
         }
-        if (mounted && confirmed) {
-            player.sendActionBar(Component.text("Eingestiegen. W/S fahren, Maus lenken, Sneak = Aussteigen.", NamedTextColor.GREEN));
-        } else {
+        // Kein "Eingestiegen"-Hinweis: dass man sitzt, sieht man. Gemeldet wird nur der Fehlschlag.
+        if (!mounted || !confirmed) {
             player.sendActionBar(Component.text("Einsteigen fehlgeschlagen.", NamedTextColor.RED));
         }
     }
@@ -108,17 +107,16 @@ public final class CarListener implements Listener {
         if (car == null) {
             return;
         }
-        // Nur abbauen, wenn gerade niemand eingestiegen ist
+        // Nur abbauen, wenn gerade niemand eingestiegen ist — dass jemand drinsitzt, sieht man,
+        // deshalb ohne Meldung
         if (car.getDriver() != null) {
-            if (event.getDamager() instanceof Player p) {
-                p.sendActionBar(Component.text("Das Auto wird gerade gefahren.", NamedTextColor.RED));
-            }
             return;
         }
-        carManager.removeCar(car, true);
-        if (event.getDamager() instanceof Player p) {
-            p.sendActionBar(Component.text("Auto abgebaut.", NamedTextColor.YELLOW));
-        }
+        // Im Kreativmodus wird das Item beim Platzieren nicht abgezogen — dann darf es beim
+        // Abbauen auch nicht droppen, sonst vermehrt sich das Auto bei jedem Setzen und Schlagen.
+        boolean creative = event.getDamager() instanceof Player p
+                && p.getGameMode() == GameMode.CREATIVE;
+        carManager.removeCar(car, !creative);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

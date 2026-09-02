@@ -2,7 +2,7 @@
 #              Auto-Plugin Einstellungen (menschenlesbar)
 # ──────────────────────────────────────────────────────────────
 # Einheiten:
-#   Geschwindigkeiten:        km/h        (162 km/h ist Standard)
+#   Geschwindigkeiten:        km/h        (170 km/h ist Standard)
 #   Beschleunigung/Bremsung:  m/s²        (Meter pro Sekunde zum Quadrat)
 #   Luftwiderstand:           % Geschwindigkeitsverlust pro Sekunde
 #   Lenkrate:                 Grad pro Sekunde
@@ -10,54 +10,61 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 8
+config-version: 10
 
 # Max. Vorwärtsgeschwindigkeit in km/h
-max-speed: 162.0
+max-speed: 170.0
 # Max. Rückwärtsgeschwindigkeit in km/h
-max-reverse-speed: 8.6
+max-reverse-speed: 20.0
 # Max. Fallgeschwindigkeit in km/h (in der Luft gibt es keinen Grip: kein Antrieb, keine Lenkung)
 max-fall-speed: 144.0
 # Beschleunigung vorwärts in m/s² (bei 100 % Grip)
-acceleration: 12.0
+acceleration: 5.0
 # Beschleunigung rückwärts in m/s² - bewusst deutlich träger als vorwärts
-reverse-acceleration: 3.2
+reverse-acceleration: 2.0
 # Bremskraft in m/s² (bei 100 % Grip; weniger Grip verlängert den Bremsweg)
-brake-deceleration: 24.0
+brake-deceleration: 8.0
 # Handbremse (Sprungtaste) in m/s² - blockiert die Räder, Grip bricht auf handbrake-grip ein
-handbrake-deceleration: 10.0
+handbrake-deceleration: 6.0
 # Motorbremse in m/s² (wirkt am Boden, auch unter Gas/Bremse)
-engine-braking: 1.6
+engine-braking: 1.2
 # Luftwiderstand: % der Geschwindigkeit, die pro Sekunde verloren geht
-drag: 1.0
+drag: 3.5
 # Max. Querbeschleunigung der Reifen in m/s² (bei 100 % Grip).
 # Bestimmt physikalisch, wie eng das Auto bei Tempo lenken kann, ohne quer zu rutschen.
 # Klein = driftig, groß = kartartig.
-max-lateral-grip: 22.0
+max-lateral-grip: 18.0
 # Lenkrad-Anschlag: maximale Krümmung der Spur in Grad pro Meter (realistisches Lenkmodell:
 # die Yaw-Rate skaliert mit dem Tempo; im Kriechtempo ergibt sich ein konstanter Wendekreis)
-turn-curvature: 40.0
+turn-curvature: 30.0
 # Absolute Mindestgeschwindigkeit in km/h, ab der gelenkt wird (an Wandkontakt darf im Stand rangiert werden)
-turn-min-speed: 3.6
+turn-min-speed: 0.0
 # Bergab-Schub in m/s²: skaliert mit dem echten Gefälle des Ticks (volle Wirkung ab 0,5 Block/Tick)
 downhill-assist: 6.0
 # Steigungs-Energie in Prozent: 100 = physikalisch (bergauf kostet Tempo, bergab gewinnt es),
 # 0 = Steigungen sind gratis
-slope-resistance: 100.0
+slope-resistance: 10.0
 # Wand-Abpraller in Prozent der Aufprallgeschwindigkeit (serverseitig auf 60 % gedeckelt)
 crash-restitution: 25.0
 # Staerke des Crash-Andrehens in Prozent (100 = Standard; dreht die Karosserie um den Aufprallpunkt)
 crash-spin: 100.0
+# Abkippen in m/s²: Schub zur unbelasteten Seite, sobald weniger als drei Raeder tragen.
+# Das Auto balanciert dann nicht auf der Kante, sondern rutscht ab. 0 = balancieren erlaubt.
+# Muss ueber der Querreibung liegen, sonst zappelt das Auto nur auf der Kante.
+tip-acceleration: 16.0
 # Maximale Sinkgeschwindigkeit in Wasser in km/h (Wasser traegt nicht, bremst aber den Fall)
 max-sink-speed: 9.0
 # Grip-Werte in Prozent: Betonfarben | Gras/Erde/Schlamm/Schnee | alle Eisarten | sonstige Blöcke
 grip-concrete: 100.0
 grip-grass: 50.0
-grip-ice: 15.0
-grip-default: 80.0
+grip-ice: 10.0
+grip-default: 70.0
 # Rest-Grip in Prozent während die Handbremse gezogen ist (klein = driftfreudig)
-handbrake-grip: 35.0
+handbrake-grip: 50.0
 # Quietsch-Sound bei Untersteuern/Schlupf
-understeer-sound: true
+understeer-sound: false
 # Debug-Logging (Fahrzustand, Ein-/Aussteigen) in die Konsole
 debug: false
+# Debug-Anzeige der Rad-Aufstandspunkte als Partikel: gruen = Rad traegt, rot = Rad haengt,
+# blau = die Karosserie-Punkte, die gegen Waende blockieren
+debug-wheels: false

@@ -115,6 +115,41 @@ public final class SelfTest extends BukkitRunnable {
         defineScenarios();
     }
 
+    /**
+     * Physik-Werte, gegen die die Fahrszenarien kalibriert sind. Der Lauf pinnt sie fuer seine
+     * Dauer in die Konfiguration und stellt danach die echte wieder her.
+     * <p>Warum: die ausgelieferten Defaults sind eine Produkt-Entscheidung (Fahrgefuehl) und
+     * duerfen sich aendern, ohne dass ein halbes Dutzend Szenarien rot wird — geprueft wird die
+     * Physik, nicht der Geschmack. Ausserdem laeuft der Test damit unabhaengig von der
+     * config.yml des Servers, auf dem er zufaellig gestartet wird: eine dort von Hand
+     * verstellte Bremskraft hat sonst Testfehler gemeldet, die gar keine waren.
+     */
+    private static final Map<String, Object> PINNED_CONFIG = Map.ofEntries(
+            Map.entry("max-speed", 162.0),
+            Map.entry("max-reverse-speed", 8.6),
+            Map.entry("max-fall-speed", 144.0),
+            Map.entry("acceleration", 12.0),
+            Map.entry("reverse-acceleration", 3.2),
+            Map.entry("brake-deceleration", 24.0),
+            Map.entry("handbrake-deceleration", 10.0),
+            Map.entry("engine-braking", 1.6),
+            Map.entry("drag", 1.0),
+            Map.entry("max-lateral-grip", 22.0),
+            Map.entry("turn-curvature", 40.0),
+            Map.entry("turn-min-speed", 3.6),
+            Map.entry("downhill-assist", 6.0),
+            Map.entry("slope-resistance", 100.0),
+            Map.entry("crash-restitution", 25.0),
+            Map.entry("crash-spin", 100.0),
+            Map.entry("tip-acceleration", 16.0),
+            Map.entry("max-sink-speed", 9.0),
+            Map.entry("grip-concrete", 100.0),
+            Map.entry("grip-grass", 50.0),
+            Map.entry("grip-ice", 15.0),
+            Map.entry("grip-default", 80.0),
+            Map.entry("handbrake-grip", 35.0),
+            Map.entry("understeer-sound", true));
+
     /** Startet den Lauf; false, wenn bereits einer läuft. */
     public boolean start() {
         if (running) {
@@ -122,6 +157,10 @@ public final class SelfTest extends BukkitRunnable {
         }
         running = true;
         startedAt = System.currentTimeMillis();
+        // Physik pinnen (siehe PINNED_CONFIG). Nur im Speicher — die Datei wird nie angefasst,
+        // und startNext() liest bei jedem Szenario genau diese Werte zurueck.
+        PINNED_CONFIG.forEach(plugin.getConfig()::set);
+        config.reload();
         // Die Baehnen werden per Chunk-Ticket geladen gehalten — geladene Chunks ticken aber
         // auch: Ackerland trocknet zu Dirt aus, Schnee schmilzt, Kaktus waechst. Das aendert
         // die Strecke waehrend der Messung und macht Laeufe unreproduzierbar.
@@ -165,6 +204,9 @@ public final class SelfTest extends BukkitRunnable {
      *  bei ueber 200 Baehnen faellt jeder ueberfluessige setType ins Gewicht. */
     private record Area(int halfWidth, int zFrom, int zTo, int yFrom, int yTo) {
     }
+
+    /** Stufen der Treppe in treppe-aus-dem-stand (eine ganze Stufe je Block = 45 Grad). */
+    private static final int STAIR_STEPS = 4;
 
     private static final Area FULL_CLEAR = new Area(3, -5, 50, -26, 8);
     private static final Area SWEEP_CLEAR = new Area(3, -5, 22, -6, 6);
@@ -368,11 +410,13 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass(fmt("%d Ticks Flug, tiefster Punkt y=%.3f", air, minY));
         });
 
-        // 6 — 2-Block-Loch: der Footprint stuetzt sich weiter ab, keine Flugphase.
+        // 6 — 1-Block-Loch: die Achsen stuetzen sich weiter ab, keine Flugphase. Mehr geht
+        // nicht: der Radstand ist 1,4 Bloecke (+-0,7), ein 2-Block-Loch faellt genau
+        // dazwischen — dann haengen beide Achsen und das Auto sackt hinein.
         add("short-gap", false, 80, 1.2, false, lane -> {
             track(lane, -4, 20, GROUND_Y - 1, Material.STONE);
             wall(lane, 20, GROUND_Y);
-            for (int z = 2; z <= 3; z++) {
+            for (int z = 2; z <= 2; z++) {
                 clearColumn(lane, z, GROUND_Y - 3, GROUND_Y - 1);
             }
         }, run -> {
@@ -480,11 +524,103 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass(fmt("blockiert wie erwartet bei z=%.3f", reached));
         });
 
-        // 11b — ganze Stufe von einem flachen Belag aus: die Oberkante des Hindernisses liegt
-        // 1/16 (Farmland) bzw. 1/8 (Schlamm) ueber dem, was von Stein aus noch befahrbar ist.
-        // Genau hier wird der gemeldete "bleibt haengen"-Fall vermutet.
-        stepUpFrom("step-up-1-from-farmland", Material.FARMLAND, true);
-        stepUpFrom("step-up-1-from-mud", Material.MUD, true);
+        // 11 — Gas wirkt nach einer Stufe weiter. Die Steigungs-Energie einer Stufe wird als
+        // Schuld gefuehrt; wird die mit hartem 45-Grad-Deckel abgetragen, faehrt das Auto danach
+        // weiter wie an einer Dauersteigung und das Pedal fuehlt sich tot an. Geprueft wird
+        // deshalb nicht die Stufe selbst, sondern was DANACH passiert: es muss wieder ziehen.
+        add("gas-nach-stufe", false, 120, 0.0, true, lane -> {
+            // Mit den ausgelieferten Defaults und kurzem Anlauf: die Stufe wird langsam
+            // genommen, und genau dann faellt eine falsch abgetragene Schuld auf.
+            applyShippedPhysics();
+            track(lane, -4, 2, GROUND_Y - 1, Material.STONE);
+            track(lane, 3, 24, GROUND_Y, Material.STONE);
+            wall(lane, 24, GROUND_Y + 1);
+        }, run -> {
+            List<SimSample> samples = run.samples();
+            int step = -1;
+            for (int i = 0; i < samples.size(); i++) {
+                if (samples.get(i).y() > GROUND_Y + 0.5) {
+                    step = i;
+                    break;
+                }
+            }
+            if (step < 0) {
+                return Result.fail("nimmt die Stufe gar nicht");
+            }
+            if (step + 30 >= samples.size()) {
+                return Result.fail("nimmt die Stufe erst am Ende, das Danach ist nicht messbar");
+            }
+            double atStep = samples.get(step).speed();
+            double slowest = samples.subList(step, step + 30).stream()
+                    .mapToDouble(SimSample::speed).min().orElse(0);
+            double after = samples.get(step + 30).speed();
+            if (slowest < atStep * 0.5) {
+                return Result.fail(fmt("faellt nach der Stufe auf %.3f von %.3f Bl/Tick zurueck — "
+                        + "die Steigungs-Schuld wirkt wie eine Dauersteigung", slowest, atStep));
+            }
+            if (after <= atStep) {
+                return Result.fail(fmt("zieht nach der Stufe nicht wieder an: %.3f -> %.3f Bl/Tick",
+                        atStep, after));
+            }
+            return Result.pass(fmt("nach der Stufe wieder %.3f von %.3f Bl/Tick (Tiefpunkt %.3f)",
+                    after, atStep, slowest));
+        });
+
+        // 11a — Treppe aus dem Stand. Der Praxisfall aus dem Spiel und das einzige Szenario,
+        // das mit den AUSGELIEFERTEN Defaults faehrt statt mit der gepinnten Testphysik: ob man
+        // mit dem Auto, das der Server auspackt, eine Treppe hochkommt, ist eine Produktfrage.
+        // Auf einer Treppe traegt die Nase das Auto ueber den Boden unter seiner Mitte — zaehlt
+        // die Hinterachse dabei nicht mit, halbiert sich der Grip und die Leistung reicht nicht.
+        add("treppe-aus-dem-stand", false, 200, 0.0, true, lane -> {
+            applyShippedPhysics();
+            track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
+            for (int step = 1; step <= STAIR_STEPS; step++) {
+                fillTo(lane, 5 + step, GROUND_Y + step);
+            }
+            for (int z = 6 + STAIR_STEPS; z <= 16; z++) {
+                fillTo(lane, z, GROUND_Y + STAIR_STEPS);
+            }
+            wall(lane, 16, GROUND_Y + STAIR_STEPS);
+        }, run -> {
+            double top = GROUND_Y + STAIR_STEPS;
+            double full = config.gripDefault;
+            // Auf der Treppe (zwischen Anlauf und Plateau) muessen alle vier Raeder tragen.
+            double worstGrip = run.samples().stream()
+                    .filter(sample -> sample.grounded() && sample.y() > GROUND_Y + 0.5
+                            && sample.y() < top - 0.5)
+                    .mapToDouble(SimSample::grip).min().orElse(-1);
+            if (worstGrip >= 0 && worstGrip < full - 0.02) {
+                return Result.fail(fmt("auf der Treppe tragen nicht alle Raeder: Grip faellt auf "
+                        + "%.3f statt %.3f — die Hinterachse gilt als haengend", worstGrip, full));
+            }
+            // Nicht "hat 64 mal beruehrt": beim Ecken-Aufstieg schnellt das Niveau kurz zwei
+            // Stufen hoch und faellt wieder zurueck. Gezaehlt wird nur, wer oben ANKOMMT —
+            // also am Ende auf dem Plateau hinter der letzten Stufe steht.
+            SimSample last = lastSample(run);
+            double plateau = 6 + STAIR_STEPS;
+            if (Math.abs(last.y() - top) > 0.05 || maxZ(run) < plateau) {
+                double have = config.acceleration * full;
+                double need = DriveTask.GRAVITY_ACCEL * config.slopeResistance;
+                return Result.fail(fmt("steht am Ende bei y=%.2f z=%.2f (erwartet y=%.0f hinter "
+                        + "z=%.0f, v=%.3f) — Antrieb %.5f gegen Steigungsbedarf %.5f Bl/Tick^2 "
+                        + "(acceleration x grip gegen GRAVITY_ACCEL x slope-resistance): %s",
+                        last.y(), maxZ(run), top, plateau, last.speed(), have, need,
+                        have < need ? "die ausgelieferten Defaults sind zu schwach"
+                                : "die Physik, nicht die Defaults"));
+            }
+            // Nur Kantenkontakt AUF der Treppe zaehlen: oben laeuft das Auto in die Abschlusswand
+            // und stuende dort sonst mit hunderten Ticks in der Bilanz.
+            long stuck = run.samples().stream()
+                    .filter(sample -> sample.blocked() && sample.y() < top - 0.05).count();
+            return Result.pass(fmt("%d Stufen aus dem Stand erklommen (y=%.2f, Grip %.3f, "
+                    + "%d Ticks Kantenkontakt)", STAIR_STEPS, last.y(), worstGrip, stuck));
+        });
+
+        // 11b — ganze Stufe von einem flachen Belag aus: die Stufe misst von Farmland aus
+        // 1,0625 und von Schlamm aus 1,125 Bloecke. Beides muss gehen, es sieht wie ein
+        // Block aus (deshalb liegt MAX_STEP bei 1,125).
+        stepUpFrom("step-up-1-from-farmland", Material.FARMLAND, false);
+        stepUpFrom("step-up-1-from-mud", Material.MUD, false);
 
         // 12–16 — Mikro-Stufen: 1/16 Block hoch (Farmland/Grasweg/Schnee -> Vollblock).
         microStep("step-micro-farmland-slow", Material.FARMLAND, 0.2, false);
@@ -900,9 +1036,12 @@ public final class SelfTest extends BukkitRunnable {
             return;
         }
         current = scenarios.get(index);
-        // Ein Szenario darf die Physik-Konfiguration umstellen (z. B. crash-restitution 0).
-        // Vor jedem Szenario zurueck auf die config.yml, damit sich das nicht fortpflanzt —
-        // auch dann, wenn der Lauf vorher abgebrochen ist und die Pruefung nie lief.
+        // Ein Szenario darf die Physik-Konfiguration umstellen (z. B. crash-restitution 0 oder
+        // die ausgelieferten Defaults statt der Testphysik). Vor jedem Szenario zurueck auf den
+        // Pin, damit sich das nicht fortpflanzt — auch dann, wenn der Lauf vorher abgebrochen
+        // ist und die Pruefung nie lief. Beides noetig: das Setzen holt Werte zurueck, die ein
+        // Szenario in plugin.getConfig() geschrieben hat, der reload die Felder von CarConfig.
+        PINNED_CONFIG.forEach(plugin.getConfig()::set);
         config.reload();
         pending.clear();
         pending.addAll(current.cases());
@@ -1043,6 +1182,9 @@ public final class SelfTest extends BukkitRunnable {
         long seconds = (System.currentTimeMillis() - startedAt) / 1000;
         log(String.format(Locale.ROOT, "SUMMARY passed=%d failed=%d known-fail=%d faelle=%d dauer=%ds",
                 passed, failed, knownFailed, totalCases, seconds));
+        // Gepinnte Physik zurueck auf die echte config.yml des Servers
+        plugin.reloadConfig();
+        config.reload();
         running = false;
         cancel();
     }
@@ -1501,7 +1643,7 @@ public final class SelfTest extends BukkitRunnable {
         // daempft danach nur 15 % des Ueberschusses je 0,25-Bloecke-Substep. Der Fixpunkt
         // dieser Folge liegt weit ueber max-sink-speed — der Wert wirkt als Richtgroesse,
         // nicht als Grenze. Entweder die Daempfung anziehen oder den Key umbenennen.
-        sweep.run("wasser-sinken", true, 80, 1.0, null, 0f, GROUND_Y - 13.0, BASIN_CLEAR, lane -> {
+        sweep.run("wasser-sinken", false, 80, 1.0, null, 0f, GROUND_Y - 13.0, BASIN_CLEAR, lane -> {
             track(lane, -4, 5, GROUND_Y - 1, Material.STONE);
             basin(lane, 6, 24, 10, Material.WATER);
         }, run -> {
@@ -1655,7 +1797,10 @@ public final class SelfTest extends BukkitRunnable {
                 return Result.fail(fmt("rollt am Berg weiter: v=%.5f bei z=%.3f y=%.3f",
                         last.speed(), reached, last.y()));
             }
-            if (reached < SEAM || last.y() <= GROUND_Y) {
+            // Nicht ueber z pruefen: das Auto steigt auf seiner VORDERACHSE (+0,9 vor der Mitte)
+            // auf die Rampe, die Mitte steht dabei noch vor der Naht. Dass es die Steigung
+            // erreicht hat, beweist die gewonnene Hoehe.
+            if (last.y() <= GROUND_Y) {
                 return Result.fail(fmt("bleibt schon vor der Steigung stehen: z=%.3f y=%.3f",
                         reached, last.y()));
             }
@@ -1682,6 +1827,21 @@ public final class SelfTest extends BukkitRunnable {
         });
 
         sweep.done();
+    }
+
+    /** Prueft den wirksamen Grip auf einer laengs verschraenkten Bahn gegen den Sollwert. */
+    private Result axleGripCheck(Run run, double expected, String what) {
+        List<SimSample> grounded = run.samples().stream().filter(SimSample::grounded).toList();
+        if (grounded.size() < 10) {
+            return Result.fail("verliert den Boden ganz — die Bahn ist falsch gebaut");
+        }
+        double worst = grounded.stream().mapToDouble(s -> Math.abs(s.grip() - expected))
+                .max().orElse(9);
+        if (worst > 0.02) {
+            return Result.fail(fmt("Grip %.3f statt %.3f — %s",
+                    grounded.get(grounded.size() - 1).grip(), expected, what));
+        }
+        return Result.pass(fmt("Grip %.3f wie erwartet — %s", expected, what));
     }
 
     /** Groesste Sinkgeschwindigkeit eines Ticks (Bloecke pro Tick, positiv). */
@@ -1756,35 +1916,79 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass("22 Materialien korrekt eingestuft (inkl. Betonpulver != Beton)");
         });
 
-        // Haengt die halbe Karosse ueber der Kante, tragen nur zwei Raeder — der wirksame
-        // Grip halbiert sich. Das ist der eigentliche Zweck der vier Rad-Samples.
-        sweep.run("halber-grip-kante", false, 40, 0.8, null, 0f, GROUND_Y - 3.0, lane -> {
+        // Haengt die halbe Karosse ueber der Kante, tragen nur zwei Raeder — und zwei Raeder
+        // sind keine Auflageflaeche, sondern eine Kippachse. Das Auto balanciert dort nicht,
+        // es kippt ab und faellt in den Graben. (Vorher fuhr es mit halbem Grip weiter.)
+        sweep.run("kippt-ueber-die-kante", false, 40, 0.8, null, 0f, GROUND_Y - 6.0, lane -> {
             for (int z = -4; z <= 30; z++) {
                 for (int x = lane.baseX() - 2; x <= lane.baseX(); x++) {
                     lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
                             .setType(Material.STONE, false);
                 }
-                // Rechts liegt der Boden so tief, dass die Federungstoleranz (1,05) reisst
-                for (int x = lane.baseX() + 1; x <= lane.baseX() + 2; x++) {
+                // Rechts liegt der Boden drei Bloecke tiefer — breit genug, dass das
+                // abgekippte Auto dort auch landet statt daneben ins Nichts zu fallen.
+                for (int x = lane.baseX() + 1; x <= lane.baseX() + 3; x++) {
                     lane.world().getBlockAt(x, GROUND_Y - 4, lane.baseZ() + z)
                             .setType(Material.STONE, false);
                 }
             }
             wall(lane, 30, GROUND_Y);
         }, run -> {
-            double full = config.gripDefault;
-            double half = full / 2.0;
-            List<SimSample> grounded = run.samples().stream().filter(SimSample::grounded).toList();
-            if (grounded.size() < 10) {
-                return Result.fail("verliert den Boden ganz — die Bahn ist falsch gebaut");
+            SimSample last = lastSample(run);
+            if (last.y() > GROUND_Y - 0.5) {
+                return Result.fail(fmt("balanciert auf zwei Raedern statt abzukippen: y=%.3f",
+                        last.y()));
             }
-            double worst = grounded.stream().mapToDouble(s -> Math.abs(s.grip() - half)).max().orElse(9);
-            if (worst > 0.02) {
-                return Result.fail(fmt("Grip an der Kante %.3f statt %.3f (halber Wert von %.3f)",
-                        grounded.get(grounded.size() - 1).grip(), half, full));
+            if (!last.grounded() || Math.abs(last.y() - (GROUND_Y - 3.0)) > 0.05) {
+                return Result.fail(fmt("landet nicht auf dem tieferen Boden: y=%.3f, grounded=%s",
+                        last.y(), last.grounded()));
             }
-            return Result.pass(fmt("zwei von vier Raedern tragen: Grip %.3f statt %.3f", half, full));
+            return Result.pass(fmt("kippt ueber die Kante und landet unten (y=%.3f)", last.y()));
         });
+
+        // Starre Achse: ein Rad EINEN Block unter seinem Gegenstueck haengt ab (Federweg 0,5).
+        // Damit tragen nur noch die zwei Raeder der oberen Seite — keine Auflageflaeche, also
+        // kippt das Auto auf die tiefere Seite und faehrt dort mit vollem Grip weiter.
+        sweep.run("kippt-vom-bordstein", false, 60, 0.8, null, 0f, GROUND_Y - 6.0, lane -> {
+            for (int z = -4; z <= 30; z++) {
+                for (int x = lane.baseX() - 2; x <= lane.baseX(); x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+                for (int x = lane.baseX() + 1; x <= lane.baseX() + 3; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 2, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+            }
+            wall(lane, 30, GROUND_Y);
+        }, run -> {
+            SimSample last = lastSample(run);
+            if (Math.abs(last.y() - (GROUND_Y - 1)) > 0.05) {
+                return Result.fail(fmt("bleibt auf zwei Raedern oben stehen: y=%.3f statt %.1f",
+                        last.y(), GROUND_Y - 1.0));
+            }
+            if (Math.abs(last.grip() - config.gripDefault) > 0.02) {
+                return Result.fail(fmt("steht unten, aber nur mit Grip %.3f statt %.3f",
+                        last.grip(), config.gripDefault));
+            }
+            return Result.pass(fmt("kippt auf die tiefere Seite und faehrt dort weiter "
+                    + "(y=%.3f, Grip %.3f)", last.y(), last.grip()));
+        });
+
+        // Gegenprobe: eine Steinstufe (0,5) Versatz liegt im Federweg — beide Raeder tragen.
+        sweep.run("voller-grip-stufe", false, 40, 0.8, null, 0f, GROUND_Y - 3.0, lane -> {
+            for (int z = -4; z <= 30; z++) {
+                for (int x = lane.baseX() - 2; x <= lane.baseX(); x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+                for (int x = lane.baseX() + 1; x <= lane.baseX() + 2; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE_SLAB, false);
+                }
+            }
+            wall(lane, 30, GROUND_Y);
+        }, run -> axleGripCheck(run, config.gripDefault, "eine halbe Stufe Versatz je Achse"));
 
         // Schlupf: bei erzwungener Drehung (simDrift, 6 Grad je Tick) folgt der Vektor auf
         // Stein spuerbar mit, auf Eis kaum. Verglichen wird der Aufbau in den ersten Ticks —
@@ -1929,6 +2133,7 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("engine-braking", Unit.MS2),
             Map.entry("max-lateral-grip", Unit.MS2),
             Map.entry("downhill-assist", Unit.MS2),
+            Map.entry("tip-acceleration", Unit.MS2),
             Map.entry("drag", Unit.DRAG),
             Map.entry("slope-resistance", Unit.PROZENT),
             Map.entry("crash-restitution", Unit.PROZENT),
@@ -2011,7 +2216,7 @@ public final class SelfTest extends BukkitRunnable {
         // den Server lahmlegen: resolveStep tastet die Strecke in 0,4-Bloecke-Schritten ab,
         // also kostet max-speed 100000 km/h rund 3500 Substeps mal neun Rasterpunkte mal zwei
         // Achsen — pro Tick und Auto.
-        sweep.run("config-obergrenzen", true, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        sweep.run("config-obergrenzen", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
         }, run -> {
             List<String> ohne = new ArrayList<>();
             for (String key : CarConfig.NUMBER_KEYS) {
@@ -2138,10 +2343,12 @@ public final class SelfTest extends BukkitRunnable {
             if (!bool.equals(List.of("true", "false"))) {
                 errors.add("Boolean-Key schlaegt " + bool + " vor");
             }
+            // Zahlen-Keys schlagen NICHTS vor: der aktuelle Wert im Eingabefeld wurde beim
+            // Tippen versehentlich mit uebernommen.
             List<String> value = List.copyOf(command.suggest(stack,
                     new String[]{"config", "max-speed", ""}));
-            if (value.size() != 1) {
-                errors.add("Zahlen-Key schlaegt " + value + " statt des aktuellen Werts vor");
+            if (!value.isEmpty()) {
+                errors.add("Zahlen-Key schlaegt " + value + " vor statt gar nichts");
             }
             List<String> prefKeys = List.copyOf(command.suggest(stack, new String[]{"prefs", ""}));
             if (!prefKeys.contains("mouse_steer") || !prefKeys.contains("actionbar_grip")) {
@@ -2217,6 +2424,21 @@ public final class SelfTest extends BukkitRunnable {
         });
 
         sweep.done();
+    }
+
+    /** Setzt die ausgelieferten Physik-Defaults statt der gepinnten Testphysik. Gilt nur fuer
+     *  das laufende Szenario: startNext() setzt den Pin vor dem naechsten wieder. */
+    private void applyShippedPhysics() {
+        YamlConfiguration shipped = shippedConfig();
+        if (shipped == null) {
+            return;
+        }
+        for (String key : CarConfig.NUMBER_KEYS) {
+            if (shipped.isSet(key)) {
+                plugin.getConfig().set(key, shipped.getDouble(key));
+            }
+        }
+        config.reload();
     }
 
     /** Die config.yml, wie sie im Jar ausgeliefert wird (nicht die des Servers). */
@@ -2396,16 +2618,16 @@ public final class SelfTest extends BukkitRunnable {
     }
 
     /** 2 — dieselbe GANZE Stufe von jedem Belag aus. Erwartet wird die Nutzer-Sicht:
-     *  was wie ein Block aussieht, muss befahrbar sein. Belaege mit gekappter Oberkante
-     *  reissen dabei MAX_STEP — das ist der offene Bug, deshalb knownFail. */
+     *  was wie ein Block aussieht, muss befahrbar sein — auch von einem Belag mit gekappter
+     *  Oberkante aus, wo die Stufe rechnerisch ueber einen Block misst (Schlamm: 1,125).
+     *  Genau dafuer liegt MAX_STEP ueber 1,0. */
     private void stepUpFromSurfaces() {
         Sweep sweep = sweep("step-up-from");
         for (Surface start : FLAT_SURFACES) {
             if (start.material() == Material.PACKED_ICE) {
                 continue; // Eis testet Grip, nicht Geometrie — der Anlauf waere zu schwach
             }
-            boolean looksLikeFullBlock = start.material() != Material.STONE_SLAB;
-            sweep.run(start.label(), looksLikeFullBlock && !isFullHeight(start), 1.0, true, lane -> {
+            sweep.run(start.label(), false, 1.0, true, lane -> {
                 track(lane, -4, SWEEP_END, GROUND_Y - 2, Material.STONE);
                 for (int z = -4; z < SEAM; z++) {
                     placeSurface(lane, z, GROUND_Y - 1, start);
@@ -2440,51 +2662,62 @@ public final class SelfTest extends BukkitRunnable {
     }
 
     /** 3 — Abstieg ueber jede Hoehe: bis MAX_STEP_DOWN muss das Auto dem Boden folgen,
-     *  darueber darf es fallen — landen und weiterfahren muss es immer. */
+     *  darueber darf es fallen — landen und weiterfahren muss es immer.
+     *  Gemessen wird gegen die ECHTE Oberkante der gebauten Strecke: surfaceAtTop kann nur
+     *  Vielfache von 1/8 (plus Teppich 1/16 und Ackerland 15/16) bauen, ein 3/16-Wunsch landet
+     *  also woanders — die Sollhoehe aus der Wunschliste waere dann schlicht falsch. */
     private void stepDownHeights() {
         Sweep sweep = sweep("step-down-heights", DEEP_CLEAR);
         double[] drops = {0.0625, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 0.9375,
                 1.0, 1.0625, 1.125, 1.1875, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 5.0};
         for (double drop : drops) {
             double target = GROUND_Y - drop;
-            // Offener Bug: ein Abstieg zwischen MAX_STEP und MAX_STEP_DOWN ist eine Falle.
-            // Das Auto folgt dem Boden hinunter (erlaubt bis MAX_STEP_DOWN), steht dann aber
-            // mit dem Heck-Sample vor einer Kante, die hoeher als MAX_STEP ist — es kann die
-            // Stufe, die es gerade heruntergefahren ist, nicht mehr verlassen und steht fuer
-            // immer. Tiefere Abstiege sind harmlos, weil sie als Fall behandelt werden.
-            boolean trap = drop > DriveTask.MAX_STEP + 1.0e-9
-                    && drop <= DriveTask.MAX_STEP_DOWN + 1.0e-9;
-            sweep.run(fmt("abstieg-%.4f", drop), trap, 1.0, true, target - 3.0, lane -> {
+            sweep.run(fmt("abstieg-%.4f", drop), false, 1.0, true, target - 3.0, lane -> {
                 track(lane, -4, SEAM - 1, GROUND_Y - 1, Material.STONE);
                 for (int z = SEAM; z <= SWEEP_END; z++) {
                     surfaceAtTop(lane, z, target);
                 }
                 wall(lane, SWEEP_END, (int) Math.floor(target));
             }, run -> {
+                double built = builtTop(run.lane(), SEAM + 2, GROUND_Y);
+                double realDrop = GROUND_Y - built;
                 double reached = maxZ(run);
                 SimSample last = lastSample(run);
                 long air = run.samples().stream().filter(s -> !s.grounded()).count();
                 double lowest = run.samples().stream().mapToDouble(SimSample::y).min().orElse(0);
                 if (reached < SWEEP_MIN_TRAVEL) {
                     return Result.fail(fmt("Abstieg %.4f: bleibt bei z=%.3f haengen (v=%.3f)",
-                            drop, reached, last.speed()));
+                            realDrop, reached, last.speed()));
                 }
-                if (!last.grounded() || Math.abs(last.y() - target) > 0.05) {
+                if (!last.grounded() || Math.abs(last.y() - built) > 0.05) {
                     return Result.fail(fmt("Abstieg %.4f: endet bei y=%.3f (erwartet %.3f), grounded=%s",
-                            drop, last.y(), target, last.grounded()));
+                            realDrop, last.y(), built, last.grounded()));
                 }
-                if (lowest < target - 0.05) {
-                    return Result.fail(fmt("Abstieg %.4f: faellt unter die Strecke (y=%.3f)", drop, lowest));
+                if (lowest < built - 0.05) {
+                    return Result.fail(fmt("Abstieg %.4f: faellt unter die Strecke (y=%.3f)",
+                            realDrop, lowest));
                 }
-                if (drop <= DriveTask.MAX_STEP_DOWN && air > 0) {
+                if (realDrop <= DriveTask.MAX_STEP_DOWN && air > 0) {
                     return Result.fail(fmt("Abstieg %.4f: %d Ticks ohne Bodenkontakt, "
                             + "bis MAX_STEP_DOWN %.1f muss das Auto dem Boden folgen",
-                            drop, air, DriveTask.MAX_STEP_DOWN));
+                            realDrop, air, DriveTask.MAX_STEP_DOWN));
                 }
-                return Result.pass(fmt("Abstieg %.4f sauber (%d Ticks Flug, z=%.3f)", drop, air, reached));
+                return Result.pass(fmt("Abstieg %.4f sauber (%d Ticks Flug, z=%.3f)",
+                        realDrop, air, reached));
             });
         }
         sweep.done();
+    }
+
+    /** Absolute Oberkante der wirklich gebauten Bahnzeile, von {@code from} abwaerts gesucht. */
+    private double builtTop(Lane lane, int zRel, int from) {
+        for (int y = from; y > from - 10; y--) {
+            double rel = supportTop(lane.world(), lane.baseX(), y, lane.baseZ() + zRel);
+            if (rel > 0) {
+                return y + rel;
+            }
+        }
+        return from;
     }
 
     /** 4 — Steigungen und Gefaelle. Zwei Familien, weil sie sich grundlegend unterscheiden:
@@ -2494,45 +2727,40 @@ public final class SelfTest extends BukkitRunnable {
         int[] runs = {1, 2, 3, 4, 6, 8};
         Sweep up = sweep("slope-up", SLOPE_CLEAR);
         for (int run : runs) {
-            addBlockSlope(up, "hoch-1-auf-" + run, run, 1);
+            addBlockSlope(up, "hoch-1-auf-" + run, run, 1, 1.0);
         }
         up.done();
 
         Sweep down = sweep("slope-down", SLOPE_CLEAR);
         for (int run : runs) {
-            addBlockSlope(down, "runter-1-auf-" + run, run, -1);
+            addBlockSlope(down, "runter-1-auf-" + run, run, -1, 0.6);
         }
         down.done();
 
-        // Teilblock-Rampen: die Oberkanten liegen zwischen den Zellgrenzen. Sobald das Auto
-        // auf einer solchen Hoehe steht, ragt der Nachbarbelag in seine KOPF-Zelle — und die
-        // gilt pauschal als unueberwindbar, egal wie flach die Stufe wirklich ist. Genau
-        // dieselbe Wurzel wie die 1-Block-Stufe von Ackerland aus.
+        // Teilblock-Rampen (Schnee, Stufen): ihre Oberkanten liegen zwischen den Zellgrenzen.
+        // Hier haengt alles daran, dass die Kollision die ECHTE Hoehe eines Hindernisses misst
+        // und das Auto als starren Koerper auf seiner hoechsten Stuetze fuehrt — sonst faellt
+        // es je Substep auf das Niveau seiner Mitte zurueck und nimmt die Steigung doppelt.
         Sweep sub = sweep("slope-subblock", SLOPE_CLEAR);
         for (double rise : new double[]{0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875}) {
-            // Bergauf blockiert JEDE Teilblock-Rampe. Bergab haengt es davon ab, wie die
-            // Oberkanten der Nachbarzeilen zufaellig zu den Zellgrenzen liegen — 3/8, 5/8 und
-            // 7/8 je Block bleiben stecken, 1/8, 1/4, 1/2 und 3/4 kommen durch. Diese Liste
-            // ist bewusst der IST-Stand: aendert sich das Kollisionsmodell, meldet der Lauf
-            // UNEXPECTED-PASS bzw. FAIL und die Werte gehoeren neu vermessen.
-            boolean stuckDownhill = rise == 0.375 || rise == 0.625 || rise == 0.875;
-            addSubBlockSlope(sub, fmt("hoch-%.3f-je-block", rise), rise, 1, true);
-            addSubBlockSlope(sub, fmt("runter-%.3f-je-block", rise), rise, -1, stuckDownhill);
+            addSubBlockSlope(sub, fmt("hoch-%.3f-je-block", rise), rise, 1, false);
+            addSubBlockSlope(sub, fmt("runter-%.3f-je-block", rise), rise, -1, false);
         }
         sub.done();
     }
 
     /** Rampe aus ganzen Bloecken: eine Stufe je {@code run} Bloecke, insgesamt drei Bloecke. */
-    private void addBlockSlope(Sweep sweep, String label, int run, int dir) {
-        // Bergauf braucht eine Stufe Vorlauf: auf Stufe N steht die 1,25 Bloecke lange Nase
-        // schon ueber Stufe N+1. Bei 45 Grad (1 Block je Block) ist das eine ganze Stufe
-        // hoeher — canStandAt lehnt ab, das Auto kommt die Treppe nicht hinauf.
-        boolean expectBlocked = dir > 0 && run == 1;
+    private void addBlockSlope(Sweep sweep, String label, int run, int dir, double startSpeed) {
         int steps = 3;
         int length = steps * run;
         int end = GROUND_Y + dir * steps;
         double lowest = Math.min(GROUND_Y, end);
-        sweep.run(label, false, dir > 0 ? 1.0 : 0.6, dir > 0, lowest - 3.0, lane -> {
+        // Die 45-Grad-Treppe ist ein Sonderfall: das Auto haengt mit der 1,25 Bloecke langen
+        // Nase auf der naechsten Stufe, traegt also nur mit den vorderen Raedern (halber Grip)
+        // und rammt dabei jede Stufenkante. Es kommt hinauf, aber langsam und mit Drehimpuls
+        // aus den Treffern — geprueft wird deshalb nur, DASS es oben ankommt, nicht wie sauber.
+        boolean stairs = dir > 0 && run == 1;
+        sweep.run(label, false, startSpeed, dir > 0, lowest - 3.0, lane -> {
             for (int z = -4; z < SEAM; z++) {
                 floorAt(lane, z, GROUND_Y - 1, Material.STONE);
             }
@@ -2550,13 +2778,14 @@ public final class SelfTest extends BukkitRunnable {
             long air = run2.samples().stream().filter(s -> !s.grounded()).count();
             double lowestY = run2.samples().stream().mapToDouble(SimSample::y).min().orElse(0);
             double topSpeed = run2.samples().stream().mapToDouble(SimSample::speed).max().orElse(0);
-            if (expectBlocked) {
-                if (reached > SEAM) {
-                    return Result.fail(fmt("45-Grad-Treppe wurde erklommen: z=%.3f y=%.3f",
-                            reached, last.y()));
+            if (stairs) {
+                double highest = run2.samples().stream().mapToDouble(SimSample::y).max().orElse(0);
+                if (highest < end - 0.05) {
+                    return Result.fail(fmt("kommt die 45-Grad-Treppe nicht hinauf: hoechstens "
+                            + "y=%.3f von %d (z=%.3f, v=%.3f)", highest, end, reached, last.speed()));
                 }
-                return Result.pass(fmt("45-Grad-Treppe blockiert wie erwartet (z=%.3f) — die Nase "
-                        + "steht auf der naechsten Stufe auf", reached));
+                return Result.pass(fmt("45-Grad-Treppe erklommen (y=%.3f bei z=%.3f) — nur die "
+                        + "Nase traegt, jede Stufe kostet Hoehenenergie", highest, reached));
             }
             if (lowestY < lowest - 0.05) {
                 return Result.fail(fmt("faellt unter die Rampe: y=%.3f statt mindestens %.3f",
@@ -2578,9 +2807,14 @@ public final class SelfTest extends BukkitRunnable {
         });
     }
 
-    /** Rampe mit Teilblock-Neigung: Oberkante steigt/faellt um {@code rise} je Block. */
+    /** Rampe mit Teilblock-Neigung: Oberkante steigt/faellt um {@code rise} je Block.
+     *  Die Laenge haelt den Gesamt-Hoehenunterschied bei rund 2,5 Bloecken: geprueft wird die
+     *  GEOMETRIE (kommt das Auto ueber Oberkanten zwischen den Zellgrenzen?), nicht der
+     *  Energievorrat. Bei fester Laenge von 12 Bloecken haette eine 7/8-Rampe 10,5 Bloecke
+     *  Steigung — die kostet bei slope-resistance 100 mehr, als der Anlauf hergibt, und der
+     *  Fall waere ein Leistungs- statt eines Kollisionstests. */
     private void addSubBlockSlope(Sweep sweep, String label, double rise, int dir, boolean knownFail) {
-        int length = 12;
+        int length = Math.min(12, Math.max(3, (int) Math.round(2.5 / rise)));
         double end = GROUND_Y + dir * rise * length;
         double lowest = Math.min(GROUND_Y, end);
         sweep.run(label, knownFail, dir > 0 ? 1.0 : 0.6, dir > 0, lowest - 3.0, lane -> {
@@ -2603,13 +2837,20 @@ public final class SelfTest extends BukkitRunnable {
                         lowestY, lowest));
             }
             if (reached < SEAM + length) {
-                return Result.fail(fmt("bleibt bei z=%.3f von %d stehen (y=%.3f, v=%.3f) — die "
-                        + "Nachbarzeile ragt in die Kopf-Zelle floor(y)+1 und gilt als unueberwindbar",
-                        reached, SEAM + length, last.y(), last.speed()));
+                return Result.fail(fmt("bleibt bei z=%.3f von %d stehen (y=%.3f, v=%.3f) — "
+                        + "Teilblock-Rampe %.3f je Block", reached, SEAM + length,
+                        last.y(), last.speed(), rise));
             }
-            if (!last.grounded() || Math.abs(last.y() - end) > 0.05) {
-                return Result.fail(fmt("endet bei y=%.3f (erwartet %.3f), grounded=%s",
-                        last.y(), end, last.grounded()));
+            // Nicht das allerletzte Sample gegen end pruefen: unten wartet die Abschlusswand,
+            // und der Rueckprall traegt das Auto ein Stueck die Rampe zurueck. Beweis fuer
+            // "durchgefahren" ist, dass es das Endniveau ueberhaupt erreicht hat — und am
+            // Ende auf dem Boden steht.
+            double extreme = dir > 0
+                    ? run.samples().stream().mapToDouble(SimSample::y).max().orElse(0)
+                    : lowestY;
+            if (!last.grounded() || Math.abs(extreme - end) > 0.05) {
+                return Result.fail(fmt("erreicht y=%.3f statt %.3f (Ende bei y=%.3f), grounded=%s",
+                        extreme, end, last.y(), last.grounded()));
             }
             return Result.pass(fmt("Teilblock-Rampe %.3f je Block durchfahren, z=%.3f y=%.3f",
                     rise, reached, last.y()));
@@ -2782,13 +3023,6 @@ public final class SelfTest extends BukkitRunnable {
                 block.setBlockData(snow, false);
             }
         }
-    }
-
-    private boolean isFullHeight(Surface surface) {
-        return switch (surface.material()) {
-            case STONE, GRASS_BLOCK, WHITE_CONCRETE, GRAVEL, SNOW_BLOCK, PACKED_ICE -> true;
-            default -> false;
-        };
     }
 
     /**
