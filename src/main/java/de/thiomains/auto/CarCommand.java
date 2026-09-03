@@ -7,6 +7,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.Sound;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -41,7 +42,7 @@ public final class CarCommand implements BasicCommand {
             new Sub("help", "/car help", "Diese Übersicht", CarPermissions.USE, false),
             new Sub("prefs", "/car prefs [<key> [on|off]]", "Eigene Fahreinstellungen", CarPermissions.PREFS, false),
             new Sub("give", "/car give", "Auto-Item ins Inventar", CarPermissions.GIVE, false),
-            new Sub("config", "/car config [<key> [wert]]", "Fahrwerte anzeigen/ändern", CarPermissions.CONFIG, false),
+            new Sub("config", "/car config [<key> [wert|reset]] | reset", "Fahrwerte anzeigen/ändern/zuruecksetzen", CarPermissions.CONFIG, false),
             new Sub("sim", "/car sim <speed> [drift] [gap] [ice] [stairs] [drive]",
                     "Headless-Testfahrt (nur Konsole)", null, true),
             new Sub("selftest", "/car selftest [--verbose] [muster]",
@@ -87,6 +88,13 @@ public final class CarCommand implements BasicCommand {
         }
         if (sub.permission() != null && !has.test(sub.permission())) {
             return new Decision(Decision.Kind.MISSING_PERMISSION, name, sub.permission());
+        }
+        if (name.equals("config") && args.length == 2 && args[1].equalsIgnoreCase("reset")) {
+            // Voller Reset aendert JEDEN Key, also die Sammel-Node und nicht nur car.config
+            // (das deckt bisher nur Lesen ab).
+            if (!has.test(CarPermissions.CONFIG_ALL)) {
+                return new Decision(Decision.Kind.MISSING_PERMISSION, name, CarPermissions.CONFIG_ALL);
+            }
         }
         if (name.equals("config") && args.length >= 3) {
             String key = args[1].toLowerCase();
@@ -256,6 +264,10 @@ public final class CarCommand implements BasicCommand {
                     NamedTextColor.YELLOW));
             return;
         }
+        if (key.equals("reset") && args.length == 2) {
+            handleConfigResetAll(sender);
+            return;
+        }
         boolean isNumber = NUMBER_KEYS.contains(key);
         boolean isString = STRING_KEYS.contains(key);
         if (!isNumber && !isString && !BOOL_KEYS.contains(key)) {
@@ -276,56 +288,86 @@ public final class CarCommand implements BasicCommand {
             return;
         }
         String raw = args[2];
+        boolean resetting = raw.equalsIgnoreCase("reset");
+        String suffix = resetting ? " (Default, live aktiv)" : " (live aktiv)";
         if (isNumber) {
             double value;
-            try {
-                value = Double.parseDouble(raw.replace(',', '.'));
-            } catch (NumberFormatException e) {
-                sender.sendMessage(Component.text("Ungültige Zahl: " + raw, NamedTextColor.RED));
-                return;
-            }
-            if (!Double.isFinite(value) || value < 0 || (MAX_100_KEYS.contains(key) && value > 100)) {
-                sender.sendMessage(Component.text("Wert ungültig für " + key + " (erlaubt: 0"
-                        + (MAX_100_KEYS.contains(key) ? "–100" : " und größer") + ").", NamedTextColor.RED));
-                return;
+            if (resetting) {
+                YamlConfiguration shipped = shippedOrWarn(sender);
+                if (shipped == null || !shipped.isSet(key)) {
+                    resetKeyMissing(sender, shipped, key);
+                    return;
+                }
+                value = shipped.getDouble(key);
+            } else {
+                try {
+                    value = Double.parseDouble(raw.replace(',', '.'));
+                } catch (NumberFormatException e) {
+                    sender.sendMessage(Component.text("Ungültige Zahl: " + raw, NamedTextColor.RED));
+                    return;
+                }
+                if (!Double.isFinite(value) || value < 0 || (MAX_100_KEYS.contains(key) && value > 100)) {
+                    sender.sendMessage(Component.text("Wert ungültig für " + key + " (erlaubt: 0"
+                            + (MAX_100_KEYS.contains(key) ? "–100" : " und größer") + ").", NamedTextColor.RED));
+                    return;
+                }
             }
             String old = humanValue(key);
             plugin.getConfig().set(key, value);
             plugin.saveConfig();
             carConfig.reload();
-            sender.sendMessage(Component.text(key + ": " + old + " → " + value + unitSuffix(key) + " (live aktiv)", NamedTextColor.GREEN));
+            sender.sendMessage(Component.text(key + ": " + old + " → " + value + unitSuffix(key) + suffix, NamedTextColor.GREEN));
             return;
         }
         if (isString) {
-            // Bisher ist jeder String-Key ein Sound-Name; ein neuer Key mit anderer Bedeutung
-            // braucht hier eine eigene Pruefung statt der Registry-Abfrage.
-            Sound sound = CarConfig.lookupSound(raw);
-            if (sound == null) {
-                sender.sendMessage(Component.text("Unbekannter Sound: " + raw, NamedTextColor.RED));
-                sender.sendMessage(Component.text("Beispiel: minecraft:block.note_block.bass",
-                        NamedTextColor.YELLOW));
-                return;
+            String value;
+            if (resetting) {
+                YamlConfiguration shipped = shippedOrWarn(sender);
+                if (shipped == null || !shipped.isSet(key)) {
+                    resetKeyMissing(sender, shipped, key);
+                    return;
+                }
+                value = shipped.getString(key);
+            } else {
+                // Bisher ist jeder String-Key ein Sound-Name; ein neuer Key mit anderer Bedeutung
+                // braucht hier eine eigene Pruefung statt der Registry-Abfrage.
+                Sound sound = CarConfig.lookupSound(raw);
+                if (sound == null) {
+                    sender.sendMessage(Component.text("Unbekannter Sound: " + raw, NamedTextColor.RED));
+                    sender.sendMessage(Component.text("Beispiel: minecraft:block.note_block.bass",
+                            NamedTextColor.YELLOW));
+                    return;
+                }
+                // Normalisiert speichern (Namensraum ergaenzt, klein), damit Anzeige und Datei gleich lauten.
+                value = CarConfig.soundName(sound);
             }
             String old = stringValue(key);
-            // Normalisiert speichern (Namensraum ergaenzt, klein), damit Anzeige und Datei gleich lauten.
-            String value = CarConfig.soundName(sound);
             plugin.getConfig().set(key, value);
             plugin.saveConfig();
             carConfig.reload();
-            sender.sendMessage(Component.text(key + ": " + old + " → " + value + " (live aktiv)",
-                    NamedTextColor.GREEN));
+            sender.sendMessage(Component.text(key + ": " + old + " → " + value + suffix, NamedTextColor.GREEN));
             return;
         }
-        if (!raw.equalsIgnoreCase("true") && !raw.equalsIgnoreCase("false")) {
-            sender.sendMessage(Component.text("Wert muss true oder false sein.", NamedTextColor.RED));
-            return;
+        boolean value;
+        if (resetting) {
+            YamlConfiguration shipped = shippedOrWarn(sender);
+            if (shipped == null || !shipped.isSet(key)) {
+                resetKeyMissing(sender, shipped, key);
+                return;
+            }
+            value = shipped.getBoolean(key);
+        } else {
+            if (!raw.equalsIgnoreCase("true") && !raw.equalsIgnoreCase("false")) {
+                sender.sendMessage(Component.text("Wert muss true oder false sein.", NamedTextColor.RED));
+                return;
+            }
+            value = Boolean.parseBoolean(raw);
         }
-        boolean value = Boolean.parseBoolean(raw);
         boolean old = boolValue(key);
         plugin.getConfig().set(key, value);
         plugin.saveConfig();
         carConfig.reload();
-        sender.sendMessage(Component.text(key + ": " + old + " → " + value + " (live aktiv)", NamedTextColor.GREEN));
+        sender.sendMessage(Component.text(key + ": " + old + " → " + value + suffix, NamedTextColor.GREEN));
     }
 
     // Headless-Selbsttest: kontrollierte Teststrecke (flach, Steinwand 6 Blöcke voraus) bei x/z=200/200.
@@ -411,6 +453,55 @@ public final class CarCommand implements BasicCommand {
         return false;
     }
 
+    /** Setzt ALLE Keys auf die ausgelieferten Defaults zurueck — braucht car.config.* (siehe decide()). */
+    private void handleConfigResetAll(CommandSender sender) {
+        YamlConfiguration shipped = shippedOrWarn(sender);
+        if (shipped == null) {
+            return;
+        }
+        int changed = 0;
+        for (String k : NUMBER_KEYS) {
+            if (shipped.isSet(k)) {
+                plugin.getConfig().set(k, shipped.getDouble(k));
+                changed++;
+            }
+        }
+        for (String k : BOOL_KEYS) {
+            if (shipped.isSet(k)) {
+                plugin.getConfig().set(k, shipped.getBoolean(k));
+                changed++;
+            }
+        }
+        for (String k : STRING_KEYS) {
+            if (shipped.isSet(k)) {
+                plugin.getConfig().set(k, shipped.getString(k));
+                changed++;
+            }
+        }
+        plugin.saveConfig();
+        carConfig.reload();
+        sender.sendMessage(Component.text(changed + " Fahrwerte auf die ausgelieferten Defaults zurueckgesetzt (live aktiv).",
+                NamedTextColor.GREEN));
+    }
+
+    /** Die ausgelieferte config.yml oder null (mit Fehlermeldung an den Sender). */
+    private YamlConfiguration shippedOrWarn(CommandSender sender) {
+        YamlConfiguration shipped = CarConfig.shippedDefaults(plugin);
+        if (shipped == null) {
+            sender.sendMessage(Component.text("config.yml liegt nicht im Jar — reset nicht möglich.",
+                    NamedTextColor.RED));
+        }
+        return shipped;
+    }
+
+    /** Meldet, warum ein Einzel-Reset nicht ging: fehlende Datei oder ein Key ohne Default
+     *  (z. B. frisch angelegt und noch nicht in der ausgelieferten config.yml). */
+    private void resetKeyMissing(CommandSender sender, YamlConfiguration shipped, String key) {
+        if (shipped != null) {
+            sender.sendMessage(Component.text(key + " hat keinen ausgelieferten Default.", NamedTextColor.RED));
+        }
+    }
+
     private String humanValue(String key) {
         return CarConfig.clampHumanValue(key, plugin.getConfig().getDouble(key)) + unitSuffix(key);
     }
@@ -469,7 +560,12 @@ public final class CarCommand implements BasicCommand {
         }
         if (args[0].equalsIgnoreCase("config") && sender.hasPermission(CarPermissions.CONFIG)) {
             if (args.length == 2) {
-                return filter(CarPermissions.configKeys(), args[1]);
+                List<String> keys = new ArrayList<>(CarPermissions.configKeys());
+                // "reset" nur anbieten, wer den vollen Reset auch ausfuehren darf.
+                if (sender.hasPermission(CarPermissions.CONFIG_ALL)) {
+                    keys.add("reset");
+                }
+                return filter(keys, args[1]);
             }
             if (args.length == 3) {
                 String key = args[1].toLowerCase();
@@ -477,15 +573,18 @@ public final class CarCommand implements BasicCommand {
                     return List.of();
                 }
                 if (NUMBER_KEYS.contains(key)) {
-                    // Bewusst kein Vorschlag: der aktuelle Wert stand sonst schon im Feld und
-                    // wurde beim Tippen mit uebernommen. Lesen geht ueber /car config <key>.
-                    return List.of();
+                    // Der aktuelle Wert selbst wird bewusst nicht vorgeschlagen (stuende sonst
+                    // schon im Feld) — "reset" schon, das ist ein eigenstaendiges Kommando.
+                    return filter(List.of("reset"), args[2]);
                 }
                 if (BOOL_KEYS.contains(key)) {
-                    return filter(List.of("true", "false"), args[2]);
+                    return filter(List.of("true", "false", "reset"), args[2]);
                 }
-                // String-Keys bekommen bewusst keine Wertvorschlaege: die Sound-Registry
-                // haette vierstellig viele Eintraege.
+                if (STRING_KEYS.contains(key)) {
+                    // Sound-Namen selbst bleiben unvorgeschlagen (die Registry haette
+                    // vierstellig viele Eintraege), "reset" schon.
+                    return filter(List.of("reset"), args[2]);
+                }
             }
             return List.of();
         }

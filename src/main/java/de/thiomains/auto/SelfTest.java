@@ -814,10 +814,17 @@ public final class SelfTest extends BukkitRunnable {
             expect(errors, "Konsole: unbekannt", null, true, CarCommand.Decision.Kind.UNKNOWN, null, "quatsch");
             expect(errors, "Ohne car.use", Set.of(), false, CarCommand.Decision.Kind.MISSING_PERMISSION,
                     CarPermissions.USE, "help");
+            // Voller Reset braucht car.config.* — car.config (nur Lesen) reicht nicht, auch
+            // wenn der Tuner einzelne Keys setzen darf.
+            expect(errors, "Tuner: config reset", tuner, false, CarCommand.Decision.Kind.MISSING_PERMISSION,
+                    CarPermissions.CONFIG_ALL, "config", "reset");
+            Set<String> allConfig = Set.of(CarPermissions.USE, CarPermissions.CONFIG, CarPermissions.CONFIG_ALL);
+            expect(errors, "car.config.*: config reset", allConfig, false, CarCommand.Decision.Kind.ALLOW, null,
+                    "config", "reset");
             if (!errors.isEmpty()) {
                 return Result.fail(String.join(" | ", errors));
             }
-            return Result.pass("16 Kombinationen korrekt");
+            return Result.pass("18 Kombinationen korrekt");
         });
 
         // 19 — Registrierung: jeder Config-Key hat seine Node, Default OP, Kind von car.config.*
@@ -2428,6 +2435,70 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass("alle Zahlen-Keys sind nach oben begrenzt");
         });
 
+        // Reset: /car config <key> reset holt genau den Wert aus der ausgelieferten config.yml
+        // zurueck (nicht aus PINNED_CONFIG — das ist die Testphysik, nicht der Default), und
+        // /car config reset tut das fuer alle drei Key-Typen auf einmal.
+        sweep.run("config-reset-key", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            CarCommand command = new CarCommand(plugin, carManager, config, prefs);
+            CommandSourceStack stack = consoleSource();
+            YamlConfiguration shipped = CarConfig.shippedDefaults(plugin);
+            if (shipped == null) {
+                return Result.fail("config.yml liegt nicht im Jar");
+            }
+            double shippedAccel = shipped.getDouble("acceleration");
+            command.execute(stack, new String[]{"config", "acceleration", "77"});
+            double afterSet = plugin.getConfig().getDouble("acceleration");
+            command.execute(stack, new String[]{"config", "acceleration", "reset"});
+            double afterReset = plugin.getConfig().getDouble("acceleration");
+            List<String> errors = new ArrayList<>();
+            if (afterSet != 77.0) {
+                errors.add("config acceleration 77 hat nicht gesetzt: " + afterSet);
+            }
+            if (afterReset != shippedAccel) {
+                errors.add(fmt("reset ergab %.3f statt des ausgelieferten Defaults %.3f",
+                        afterReset, shippedAccel));
+            }
+            if (afterReset == 12.0) {
+                // 12.0 ist PINNED_CONFIG, nicht der ausgelieferte Default — waere das Ergebnis,
+                // haette reset versehentlich die Testphysik statt der config.yml gelesen.
+                errors.add("reset hat die gepinnte Testphysik gelesen, nicht die ausgelieferte config.yml");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass(fmt("acceleration: 77 -> reset -> %.3f (ausgeliefert)", afterReset));
+        });
+
+        sweep.run("config-reset-alle", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            CarCommand command = new CarCommand(plugin, carManager, config, prefs);
+            CommandSourceStack stack = consoleSource();
+            YamlConfiguration shipped = CarConfig.shippedDefaults(plugin);
+            if (shipped == null) {
+                return Result.fail("config.yml liegt nicht im Jar");
+            }
+            command.execute(stack, new String[]{"config", "grip-ice", "1"});
+            command.execute(stack, new String[]{"config", "understeer-sound-enabled", "true"});
+            command.execute(stack, new String[]{"config", "horn-pitch", "1.9"});
+            command.execute(stack, new String[]{"config", "reset"});
+            List<String> errors = new ArrayList<>();
+            if (plugin.getConfig().getDouble("grip-ice") != shipped.getDouble("grip-ice")) {
+                errors.add("grip-ice nicht zurueckgesetzt: " + plugin.getConfig().getDouble("grip-ice"));
+            }
+            if (plugin.getConfig().getBoolean("understeer-sound-enabled")
+                    != shipped.getBoolean("understeer-sound-enabled")) {
+                errors.add("understeer-sound-enabled nicht zurueckgesetzt");
+            }
+            if (plugin.getConfig().getDouble("horn-pitch") != shipped.getDouble("horn-pitch")) {
+                errors.add("horn-pitch nicht zurueckgesetzt: " + plugin.getConfig().getDouble("horn-pitch"));
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Zahl, Schalter und Text-Key gemeinsam auf die Defaults zurueckgesetzt");
+        });
+
         // Hupe: der ausgelieferte Sound-Name muss in der Registry existieren — ein Tippfehler
         // im Default waere sonst erst im Spiel zu hoeren. Umgekehrt darf Unsinn nicht durchgehen.
         sweep.run("config-hupe-sound", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
@@ -2569,27 +2640,31 @@ public final class SelfTest extends BukkitRunnable {
             if (!List.copyOf(command.suggest(stack, new String[]{"con"})).equals(List.of("config"))) {
                 errors.add("Praefix 'con' filtert nicht auf config");
             }
+            // "reset" ist ein eigenstaendiges Kommando (voller Reset) und steht deshalb mit in
+            // der Key-Liste — die Konsole hat car.config.*, sieht es also.
             List<String> keys = List.copyOf(command.suggest(stack, new String[]{"config", ""}));
-            if (keys.size() != CarPermissions.configKeys().size()) {
-                errors.add("config-Keys: " + keys.size() + " statt " + CarPermissions.configKeys().size());
+            if (keys.size() != CarPermissions.configKeys().size() + 1 || !keys.contains("reset")) {
+                errors.add("config-Keys: " + keys.size() + " statt " + (CarPermissions.configKeys().size() + 1)
+                        + " oder reset fehlt");
             }
             List<String> bool = List.copyOf(command.suggest(stack,
                     new String[]{"config", "understeer-sound-enabled", ""}));
-            if (!bool.equals(List.of("true", "false"))) {
+            if (!bool.equals(List.of("true", "false", "reset"))) {
                 errors.add("Boolean-Key schlaegt " + bool + " vor");
             }
-            // String-Keys ebenfalls nicht: die Sound-Registry hat vierstellig viele Eintraege.
+            // Sound-Namen selbst bleiben unvorgeschlagen (die Registry haette vierstellig viele
+            // Eintraege), "reset" aber schon.
             List<String> text = List.copyOf(command.suggest(stack,
                     new String[]{"config", "horn-sound", ""}));
-            if (!text.isEmpty()) {
-                errors.add("String-Key schlaegt " + text + " vor statt gar nichts");
+            if (!text.equals(List.of("reset"))) {
+                errors.add("String-Key schlaegt " + text + " vor statt nur reset");
             }
-            // Zahlen-Keys schlagen NICHTS vor: der aktuelle Wert im Eingabefeld wurde beim
-            // Tippen versehentlich mit uebernommen.
+            // Der aktuelle Wert im Eingabefeld wird bewusst nicht vorgeschlagen (der stuende
+            // sonst schon im Feld), "reset" aber schon.
             List<String> value = List.copyOf(command.suggest(stack,
                     new String[]{"config", "max-speed", ""}));
-            if (!value.isEmpty()) {
-                errors.add("Zahlen-Key schlaegt " + value + " vor statt gar nichts");
+            if (!value.equals(List.of("reset"))) {
+                errors.add("Zahlen-Key schlaegt " + value + " vor statt nur reset");
             }
             List<String> prefKeys = List.copyOf(command.suggest(stack, new String[]{"prefs", ""}));
             if (!prefKeys.contains("mouse_steer") || !prefKeys.contains("actionbar_grip")) {
@@ -2684,15 +2759,7 @@ public final class SelfTest extends BukkitRunnable {
 
     /** Die config.yml, wie sie im Jar ausgeliefert wird (nicht die des Servers). */
     private YamlConfiguration shippedConfig() {
-        try (java.io.InputStream in = plugin.getResource("config.yml")) {
-            if (in == null) {
-                return null;
-            }
-            return YamlConfiguration.loadConfiguration(
-                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            return null;
-        }
+        return CarConfig.shippedDefaults(plugin);
     }
 
     /** Der wirksame (bereits umgerechnete) Wert eines Config-Keys. */

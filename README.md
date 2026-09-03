@@ -135,6 +135,12 @@ Beim Update auf 1.5.0: `understeer-sound` heißt jetzt `understeer-sound-enabled
 Suffix `-sound` eindeutig für den Sound-**Namen** steht. Ein gesetzter Wert wandert bei der
 Migration automatisch mit.
 
+`reset` holt den Wert aus der im Plugin mitgelieferten `config.yml`, nicht aus einer
+Server-Konfiguration, die zufällig noch die alten Werte trug — geänderte Defaults einer neuen
+Version erreichen einen bestehenden Server über die Migration sonst nie (siehe unten). Der
+volle Reset braucht `car.config.*`, der Einzel-Reset wie jedes Setzen die passende
+`car.config.<key>`-Node.
+
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
 Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere Default.
 

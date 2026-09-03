@@ -4,6 +4,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
 import org.bukkit.Sound;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
@@ -203,6 +204,22 @@ public final class CarConfig {
     /** Umkehrung von lookupSound — der Name, den /car config anzeigt. */
     public static String soundName(Sound sound) {
         return Registry.SOUNDS.getKeyOrThrow(sound).asString();
+    }
+
+    /**
+     * Die ausgelieferte config.yml direkt aus dem Jar-Ressourcenordner — unabhaengig von einer
+     * evtl. schon auf der Platte stehenden Datei. Basis fuer /car config reset.
+     */
+    public static YamlConfiguration shippedDefaults(JavaPlugin plugin) {
+        try (java.io.InputStream in = plugin.getResource("config.yml")) {
+            if (in == null) {
+                return null;
+            }
+            return YamlConfiguration.loadConfiguration(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.io.IOException e) {
+            return null;
+        }
     }
 
     private static double clamp(double value, double min, double max) {
