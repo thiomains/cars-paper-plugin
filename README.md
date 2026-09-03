@@ -88,7 +88,7 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 13`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+`config.yml` (`config-version: 14`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
 auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
@@ -101,11 +101,16 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Lenkung & Grip | `max-lateral-grip`, `turn-curvature`, `turn-min-speed`, `handbrake-grip` |
 | Untergrund | `grip-concrete`, `grip-grass`, `grip-ice`, `grip-default` |
 | Gelände | `downhill-assist`, `slope-resistance` |
-| Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
+| Crash | `crash-restitution`, `crash-spin`, `crash-transfer`, `tip-acceleration` |
 | Hupe | `horn-sound`, `horn-pitch`, `horn-range` |
 | Anfahren | `impact-damage`, `impact-min-speed`, `impact-knockback` |
 | Feld | `field-damage-enabled` |
 | Sonstiges | `understeer-sound-enabled`, `debug`, `debug-wheels` |
+
+`crash-transfer` ist der Anteil der Aufprallgeschwindigkeit, der beim Auto-Auto-Crash auf das
+getroffene Auto übergeht (Standard 60 %, serverseitig auf rund 36 km/h gedeckelt). Die Richtung
+kommt aus der Verbindungsachse der beiden Mitten, ein seitlicher Streifer schiebt also zur
+Seite und nicht nach vorn. `0` macht Autos wieder zu Wänden füreinander.
 
 Wer angefahren wird, nimmt Schaden und fliegt zur Seite: `impact-damage` ist der Schaden in
 Schadenspunkten (2 = ein Herz) **bei 100 km/h** und skaliert linear mit dem Tempo, `0` schaltet

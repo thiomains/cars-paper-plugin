@@ -21,7 +21,7 @@ public final class CarConfig {
             "max-speed", "max-reverse-speed", "max-fall-speed", "acceleration", "reverse-acceleration",
             "brake-deceleration", "handbrake-deceleration", "engine-braking", "drag", "max-lateral-grip",
             "turn-curvature", "turn-min-speed", "downhill-assist", "slope-resistance",
-            "crash-restitution", "crash-spin", "tip-acceleration", "max-sink-speed",
+            "crash-restitution", "crash-spin", "crash-transfer", "tip-acceleration", "max-sink-speed",
             "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
             "horn-pitch", "horn-range",
             "impact-damage", "impact-min-speed", "impact-knockback"
@@ -56,6 +56,8 @@ public final class CarConfig {
     public double crashRestitution;
     /** Skalierer des Crash-Drehimpulses aus dem Aufprall-Hebel (1.0 = Standard). */
     public double crashSpin;
+    /** Anteil der Aufprall-Geschwindigkeit, der auf das getroffene Auto uebergeht. */
+    public double crashTransfer;
     /** Schub zur unbelasteten Seite, wenn weniger als drei Raeder tragen (Abkippen). */
     public double tipAcceleration;
     /** Maximale Sinkgeschwindigkeit in Wasser. */
@@ -110,6 +112,7 @@ public final class CarConfig {
         slopeResistance = clampHumanValue("slope-resistance", c.getDouble("slope-resistance", 10.0)) / 100.0;
         crashRestitution = clampHumanValue("crash-restitution", c.getDouble("crash-restitution", 25.0)) / 100.0;
         crashSpin = clampHumanValue("crash-spin", c.getDouble("crash-spin", 100.0)) / 100.0;
+        crashTransfer = clampHumanValue("crash-transfer", c.getDouble("crash-transfer", 60.0)) / 100.0;
         tipAcceleration = metersPerSecondSquared(clampHumanValue("tip-acceleration", c.getDouble("tip-acceleration", 16.0)));
         maxSinkSpeed = kmh(clampHumanValue("max-sink-speed", c.getDouble("max-sink-speed", 9.0)));
         gripConcrete = clampHumanValue("grip-concrete", c.getDouble("grip-concrete", 100.0)) / 100.0;
@@ -152,6 +155,7 @@ public final class CarConfig {
             case "slope-resistance" -> clamp(value, 0.0, 200.0);
             case "crash-restitution" -> clamp(value, 0.0, 60.0);
             case "crash-spin" -> clamp(value, 0.0, 400.0);
+            case "crash-transfer" -> clamp(value, 0.0, 200.0);
             case "drag" -> clamp(value, 0.0, 100.0);
             // Pitch-Bereich des Protokolls; 0 ist erlaubt und gewollt (siehe understeer-sound-enabled).
             case "horn-pitch" -> clamp(value, 0.0, 2.0);

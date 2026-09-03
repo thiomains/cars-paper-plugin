@@ -10,7 +10,7 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 13
+config-version: 14
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 170.0
@@ -48,6 +48,9 @@ slope-resistance: 10.0
 crash-restitution: 25.0
 # Staerke des Crash-Andrehens in Prozent (100 = Standard; dreht die Karosserie um den Aufprallpunkt)
 crash-spin: 100.0
+# Anteil der Aufprall-Geschwindigkeit in Prozent, der beim Auto-Auto-Crash auf das getroffene
+# Auto uebergeht (serverseitig auf ~36 km/h gedeckelt). 0 = Autos bleiben Waende fuereinander.
+crash-transfer: 60.0
 # Abkippen in m/s²: Schub zur unbelasteten Seite, sobald weniger als drei Raeder tragen.
 # Das Auto balanciert dann nicht auf der Kante, sondern rutscht ab. 0 = balancieren erlaubt.
 # Muss ueber der Querreibung liegen, sonst zappelt das Auto nur auf der Kante.

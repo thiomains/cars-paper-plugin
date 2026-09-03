@@ -83,6 +83,9 @@ public final class DriveTask extends BukkitRunnable {
      *  weniger Ticks (0,6 je Tick), in der Luft nur 0,09. Wer angefahren wird, hebt ab und
      *  fliegt dann weit — ohne Auftrieb bleibt es bei einem halben Block Geschubse. */
     private static final double IMPACT_LIFT = 0.5;
+    /** Deckel des Auto-Auto-Stosses in Bloecken/Tick (~36 km/h): ein Rempler schiebt beiseite,
+     *  er katapultiert nicht. */
+    private static final double CAR_PUSH_MAX = 0.5;
     private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
     private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
     private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
@@ -346,7 +349,7 @@ public final class DriveTask extends BukkitRunnable {
                 targetX += vx;
                 targetZ += vz;
             } else {
-                List<Location> others = otherCarLocations(world, car);
+                List<Car> others = otherCars(world, car);
                 boolean canSnapDown = car.getFallSpeed() == 0;
                 // Achsenweise: blockierte Achse verliert ihre Geschwindigkeit, die freie gleitet weiter
                 if (vx != 0) {
@@ -701,13 +704,13 @@ public final class DriveTask extends BukkitRunnable {
      * (Hoehe aus der Kollisionsform, Slabs eingerechnet): das Auto steigt auf und die Route
      * laeuft weiter. Bei echter Blockade steht das Auto am letzten freien Sample.
      */
-    private StepResult resolveStep(World world, List<Location> others, float carYaw, boolean canSnapDown,
+    private StepResult resolveStep(World world, List<Car> others, float carYaw, boolean canSnapDown,
                                    int axis, double fromX, double fromY, double fromZ, double toX, double toZ) {
         double distX = toX - fromX;
         double distZ = toZ - fromZ;
         double dist = Math.hypot(distX, distZ);
         if (dist <= 0) {
-            return new StepResult(false, fromX, fromY, fromZ, 0.0, 0.0, 0, 0.0);
+            return new StepResult(false, fromX, fromY, fromZ, 0.0, 0.0, 0, 0.0, null);
         }
         int samples = Math.max(1, (int) Math.ceil(dist / SAMPLE_STEP));
         double stepX = distX / samples;
@@ -723,18 +726,19 @@ public final class DriveTask extends BukkitRunnable {
         for (int i = 1; i <= samples; i++) {
             double sx = fromX + stepX * i;
             double sz = fromZ + stepZ * i;
-            if (nearOtherCar(others, sx, sz)) {
-                return new StepResult(true, freeX, curY, freeZ, sx, sz, 3, dist);
+            Car other = carAt(others, sx, sz);
+            if (other != null) {
+                return new StepResult(true, freeX, curY, freeZ, sx, sz, 3, dist, other);
             }
             // Zuerst die Achsen: sie tragen das Auto, also bestimmen sie das Fahrniveau.
             Probe support = footprintObstacle(world, SUPPORT_LONG, SUPPORT_LAT, sx, sz, curY,
                     fwdX, fwdZ, sideX, sideZ, stepX, stepZ);
             if (support.top() > curY + MAX_STEP + 1.0e-9) {
-                return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist);
+                return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist, null);
             }
             if (support.top() > curY + 1.0e-4) {
                 if (!canStandAt(world, sx, support.top(), sz, fwdX, fwdZ, sideX, sideZ, stepX, stepZ)) {
-                    return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist);
+                    return new StepResult(true, freeX, curY, freeZ, support.x(), support.z(), axis, dist, null);
                 }
                 curY = support.top();
             }
@@ -743,7 +747,7 @@ public final class DriveTask extends BukkitRunnable {
             Probe body = footprintObstacle(world, GRID_LONG, GRID_LAT, sx, sz, curY,
                     fwdX, fwdZ, sideX, sideZ, stepX, stepZ);
             if (body.top() > curY + MAX_STEP + 1.0e-9) {
-                return new StepResult(true, freeX, curY, freeZ, body.x(), body.z(), axis, dist);
+                return new StepResult(true, freeX, curY, freeZ, body.x(), body.z(), axis, dist, null);
             }
             // Gelaendeverfolgung nach unten: kurze Abstiege nimmt das Auto direkt mit,
             // sonst fliegt es bei mehreren Zellen pro Tick den Abhang ballistisch herab.
@@ -752,7 +756,7 @@ public final class DriveTask extends BukkitRunnable {
             freeX = sx;
             freeZ = sz;
         }
-        return new StepResult(false, toX, curY, toZ, 0.0, 0.0, 0, 0.0);
+        return new StepResult(false, toX, curY, toZ, 0.0, 0.0, 0, 0.0, null);
     }
 
     /**
@@ -768,6 +772,9 @@ public final class DriveTask extends BukkitRunnable {
             return 0.0;
         }
         boolean hitCar = sr.impactAxis() == 3;
+        if (hitCar && sr.hitCar() != null) {
+            pushCar(sr.hitCar(), impact, fromX, fromZ);
+        }
         double restitution = hitCar ? config.crashRestitution * 0.5 : config.crashRestitution;
         if (!hitCar && config.crashSpin > 0) {
             double leverX = sr.impactX() - fromX;
@@ -944,23 +951,25 @@ public final class DriveTask extends BukkitRunnable {
                 fwdX, fwdZ, sideX, sideZ, dirX, dirZ).top() <= y + MAX_STEP + 1.0e-9;
     }
 
-    private boolean nearOtherCar(List<Location> others, double x, double z) {
+    /** Das Auto, das an dieser Stelle im Weg steht, sonst null. */
+    private Car carAt(List<Car> others, double x, double z) {
         double limit = CAR_COLLISION_RADIUS * CAR_COLLISION_RADIUS;
-        for (Location other : others) {
-            double dx = other.getX() - x;
-            double dz = other.getZ() - z;
+        for (Car other : others) {
+            Location loc = other.getBase().getLocation();
+            double dx = loc.getX() - x;
+            double dz = loc.getZ() - z;
             if (dx * dx + dz * dz < limit) {
-                return true;
+                return other;
             }
         }
-        return false;
+        return null;
     }
 
-    private List<Location> otherCarLocations(World world, Car self) {
-        List<Location> others = new ArrayList<>();
+    private List<Car> otherCars(World world, Car self) {
+        List<Car> others = new ArrayList<>();
         for (Car other : carManager.getCars()) {
             if (other != self && !other.getBase().isDead() && other.getBase().getWorld() == world) {
-                others.add(other.getBase().getLocation());
+                others.add(other);
             }
         }
         return others;
@@ -1067,6 +1076,30 @@ public final class DriveTask extends BukkitRunnable {
      * Aufstandshoehe), rot = Rad haengt (Punkt auf Achshoehe), blau = die acht Karosserie-Punkte
      * auf Fahrniveau, die gegen Waende blockieren.
      */
+    /**
+     * Schiebt das getroffene Auto beiseite. Die Richtung kommt aus der Verbindungsachse der
+     * beiden Mitten und nicht aus der Fahrtrichtung — sonst schoebe ein seitlicher Streifer
+     * das andere Auto geradeaus nach vorn statt zur Seite.
+     * Der Tick-Riegel ist noetig, weil beide Achsen eines Ticks denselben Zusammenstoss melden
+     * koennen: ohne ihn bekaeme das getroffene Auto den Stoss doppelt.
+     */
+    private void pushCar(Car other, double impact, double fromX, double fromZ) {
+        if (config.crashTransfer <= 0 || other.getLastPushTick() == tickCount) {
+            return;
+        }
+        Location loc = other.getBase().getLocation();
+        double dx = loc.getX() - fromX;
+        double dz = loc.getZ() - fromZ;
+        double dist = Math.hypot(dx, dz);
+        if (dist < 1.0e-6) {
+            return;
+        }
+        other.setLastPushTick(tickCount);
+        double push = Math.min(config.crashTransfer * impact, CAR_PUSH_MAX);
+        other.setVelX(other.getVelX() + dx / dist * push);
+        other.setVelZ(other.getVelZ() + dz / dist * push);
+    }
+
     /**
      * Schaden und Wegstossen fuer Lebewesen in der Karosserie. Die Suche laeuft ueber eine
      * achsenparallele Box (die kennt der Server billig) und filtert danach auf das
@@ -1401,10 +1434,13 @@ public final class DriveTask extends BukkitRunnable {
     }
 
     private record StepResult(boolean blocked, double x, double y, double z,
-                              double impactX, double impactZ, int impactAxis, double impactSpeed) {
+                              double impactX, double impactZ, int impactAxis, double impactSpeed,
+                              Car hitCar) {
         // blocked=true heißt: Route nicht frei; x/z zeigen dann auf den letzten freien Sample-Punkt.
         // impact*: Crash-Daten — Footprint-Grid-Punkt des Blockers, getroffene Achse
         // (0 = kein Aufprall, 1 = X-Wand, 2 = Z-Wand, 3 = anderes Auto) und |Achsen-Geschwindigkeit|.
+        // hitCar: nur bei Achse 3 gesetzt — ohne die Referenz bekaeme das getroffene Auto
+        // nichts vom Zusammenstoss mit.
     }
 
     private record GravityResult(double y, boolean snapped) {

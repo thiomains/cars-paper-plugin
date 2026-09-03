@@ -32,6 +32,8 @@ public final class Car {
     private double slopeDebt;
     private long lastUndersteerSoundTick = -1000;
     private long lastHornTick = -1000;
+    /** Tick des letzten Auto-Auto-Stosses — beide Achsen melden denselben Zusammenstoss. */
+    private long lastPushTick = -1000;
     private int simTicks;
     private boolean simDrift;
     private SimInput simInput;
@@ -169,6 +171,14 @@ public final class Car {
 
     public void setLastUndersteerSoundTick(long lastUndersteerSoundTick) {
         this.lastUndersteerSoundTick = lastUndersteerSoundTick;
+    }
+
+    public long getLastPushTick() {
+        return lastPushTick;
+    }
+
+    public void setLastPushTick(long lastPushTick) {
+        this.lastPushTick = lastPushTick;
     }
 
     public long getLastHornTick() {

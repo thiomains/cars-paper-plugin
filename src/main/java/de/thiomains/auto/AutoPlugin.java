@@ -9,7 +9,7 @@ public final class AutoPlugin extends JavaPlugin {
 
     /** Bei jeder Aenderung an Keys oder Einheiten hochzaehlen — muss zum config-version
      *  in der ausgelieferten config.yml passen (der Selftest prueft genau das). */
-    static final int CONFIG_VERSION = 13;
+    static final int CONFIG_VERSION = 14;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;

@@ -365,22 +365,38 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass(fmt("Kontakt z=%.3f ohne Abpraller (%.3f)", contact, rebound));
         });
 
-        // 3 — Auto gegen Auto: blockiert, kein Andrehen.
+        // 3 — Auto gegen Auto: das getroffene Auto wird beiseitegeschoben, die beiden
+        // durchdringen sich nie, und der Auffahrende dreht sich nicht ein (Andrehen gibt es
+        // nur an Waenden). Vor dem Impulsuebertrag stand hier "blockiert bei z <= 5,5" — mit
+        // dem Stoss faehrt der Auffahrende dem geschobenen Auto natuerlich hinterher, der
+        // Abstand ist die aussagekraeftige Groesse.
         add("car-car", false, 100, 1.0, false, lane -> {
             track(lane, -4, 20, GROUND_Y - 1, Material.STONE);
             wall(lane, 20, GROUND_Y);
             extraCars.add(carManager.spawnCar(new Location(lane.world(), lane.baseX() + 0.5,
                     lane.groundY(), lane.baseZ() + 6.5, 0f, 0f), 0f));
         }, run -> {
-            double contact = maxZ(run);
+            if (extraCars.isEmpty()) {
+                return Result.fail("das zweite Auto fehlt");
+            }
+            double otherZ = extraCars.get(0).getBase().getLocation().getZ() - run.lane().baseZ();
+            double selfZ = lastSample(run).z() - run.lane().baseZ();
             double spin = Math.abs(lastSample(run).yaw());
-            if (contact > 5.5) {
-                return Result.fail(fmt("durch das andere Auto gefahren (z=%.3f)", contact));
+            List<String> errors = new ArrayList<>();
+            if (otherZ < 7.5) {
+                errors.add(fmt("nicht abgestossen: z=%.3f, stand bei 6,5", otherZ));
+            }
+            if (otherZ - selfZ < 1.3) {
+                errors.add(fmt("Autos durchdringen sich: Abstand %.3f", otherZ - selfZ));
             }
             if (spin > 2.0) {
-                return Result.fail(fmt("Auto-Auto darf nicht andrehen, yaw=%.1f", spin));
+                errors.add(fmt("Auto-Auto darf nicht andrehen, yaw=%.1f", spin));
             }
-            return Result.pass(fmt("blockiert bei z=%.3f, yaw=%.1f", contact, spin));
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass(fmt("getroffenes Auto auf z=%.3f geschoben, Abstand %.3f, yaw=%.1f",
+                    otherZ, otherZ - selfZ, spin));
         });
 
         // 4 — Rueckwaerts: der Vektor richtet sich auf die Rollrichtung aus, nicht stur auf yaw.
@@ -2306,6 +2322,7 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("slope-resistance", Unit.PROZENT),
             Map.entry("crash-restitution", Unit.PROZENT),
             Map.entry("crash-spin", Unit.PROZENT),
+            Map.entry("crash-transfer", Unit.PROZENT),
             Map.entry("grip-concrete", Unit.PROZENT),
             Map.entry("grip-grass", Unit.PROZENT),
             Map.entry("grip-ice", Unit.PROZENT),
@@ -2697,6 +2714,7 @@ public final class SelfTest extends BukkitRunnable {
             case "slope-resistance" -> config.slopeResistance;
             case "crash-restitution" -> config.crashRestitution;
             case "crash-spin" -> config.crashSpin;
+            case "crash-transfer" -> config.crashTransfer;
             case "grip-concrete" -> config.gripConcrete;
             case "grip-grass" -> config.gripGrass;
             case "grip-ice" -> config.gripIce;

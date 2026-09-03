@@ -425,7 +425,8 @@ public final class CarCommand implements BasicCommand {
             case "turn-curvature" -> " °/m";
             case "horn-range" -> " Blöcke";
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
-                 "slope-resistance", "crash-restitution", "crash-spin", "impact-knockback" -> " %";
+                 "slope-resistance", "crash-restitution", "crash-spin", "crash-transfer",
+                 "impact-knockback" -> " %";
             default -> "";
         };
     }
