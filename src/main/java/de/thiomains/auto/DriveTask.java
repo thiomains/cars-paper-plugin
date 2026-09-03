@@ -76,6 +76,9 @@ public final class DriveTask extends BukkitRunnable {
     private static final double SLOPE_DEBT_FADE = 0.90;
     /** Hoehe der Karosserie (dieselbe 1,8 wie die Klick-Hitbox in CarManager). */
     private static final double BODY_HEIGHT = 1.8;
+    /** Ab diesem Grip-Verbrauch (Traktionskreis, 1.0 = Limit) qualmen die Reifen. Knapp unter
+     *  dem Limit statt genau darauf, sonst wirkt der Rauch bei Vollgasstarts sprunghaft an/aus. */
+    private static final double TIRE_SMOKE_MIN = 0.85;
     /** Deckel des Wegstossens in Bloecken/Tick (~50 km/h) — sonst fliegt ein Schaf ueber die halbe Karte. */
     private static final double IMPACT_KNOCKBACK_MAX = 0.7;
     /** Anteil des Stosses, der nach oben geht. Nicht Deko, sondern der Grund, warum man vom
@@ -186,7 +189,7 @@ public final class DriveTask extends BukkitRunnable {
         // kommt aus den vier Rad-Aufstandspunkten (siehe probeWheels, mit starrer Achse); nicht
         // tragende Raeder zaehlen mit 0 in die Division durch 4: haengt die halbe Karosse ueber
         // einer echten Kante, halbiert sich der wirksame Grip.
-        Wheels wheels = probeWheels(world, loc.getX(), loc.getY(), loc.getZ(), yaw, false);
+        Wheels wheels = probeWheels(world, loc.getX(), loc.getY(), loc.getZ(), yaw, false, 0.0);
         Material groundType = world.getBlockAt(floor(loc.getX()), floor(loc.getY() - 0.05),
                 floor(loc.getZ())).getType();
         boolean grounded = wheels.carrying() >= 1;
@@ -502,7 +505,7 @@ public final class DriveTask extends BukkitRunnable {
         // Sichtpruefungs-Stand: Steigungs-Term und Roll korrekt, der Pedal-Term stand Kopf und
         // ist daher invertiert (Minus davor!) — nicht die Achsen pauschal flippen.
         boolean showWheels = config.debugWheels && tickCount % 2 == 0;
-        Wheels stance = probeWheels(world, targetX, targetY, targetZ, yaw, showWheels);
+        Wheels stance = probeWheels(world, targetX, targetY, targetZ, yaw, showWheels, gripUsage);
         // Nicken aus der Achslage, Wanken aus der Achsverschraenkung plus dem Kurven-Anteil.
         // VORZEICHEN: beide Gelaende-Terme sind headless nicht pruefbar — stimmt der Drehsinn im
         // Spiel nicht, hier das Minus kippen (nicht die Quaternion-Achsen tauschen).
@@ -1229,7 +1232,8 @@ public final class DriveTask extends BukkitRunnable {
         return CROPS.contains(material);
     }
 
-    private Wheels probeWheels(World world, double x, double y, double z, float carYaw, boolean draw) {
+    private Wheels probeWheels(World world, double x, double y, double z, float carYaw, boolean draw,
+                              double smokeUsage) {
         double yawRad = Math.toRadians(carYaw);
         double fwdX = -Math.sin(yawRad);
         double fwdZ = Math.cos(yawRad);
@@ -1275,8 +1279,17 @@ public final class DriveTask extends BukkitRunnable {
             boolean carries = tops[w] > Double.NEGATIVE_INFINITY;
             if (carries) {
                 carrying++;
-                gripSum += gripCalculator.gripFor(world.getBlockAt(floor(wx[w]),
-                        floor(tops[w] - 0.05), floor(wz[w])).getType());
+                Material ground = world.getBlockAt(floor(wx[w]), floor(tops[w] - 0.05), floor(wz[w])).getType();
+                gripSum += gripCalculator.gripFor(ground);
+                // Reifenrauch: Partikel aus dem Untergrundblock selbst (Particle.BLOCK), damit
+                // Farbe/Textur automatisch zum Material passen — Gras staeubt gruen-braun,
+                // Beton grau, ohne dass hier eine Materialliste gepflegt werden muss. Nur alle
+                // zwei Ticks, sonst wird es bei Drift/Vollgasstart eine dichte Wand.
+                if (smokeUsage >= TIRE_SMOKE_MIN && tickCount % 2 == 0 && !ground.isAir()) {
+                    int count = 1 + (int) Math.min(3, (smokeUsage - TIRE_SMOKE_MIN) * 8);
+                    world.spawnParticle(Particle.BLOCK, wx[w], tops[w] + 0.1, wz[w], count,
+                            0.12, 0.02, 0.12, 0.0, ground.createBlockData());
+                }
             }
             if (draw) {
                 double axle = axleTop[w / 2];

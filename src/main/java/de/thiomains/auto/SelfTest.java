@@ -5,6 +5,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.World;
 import org.bukkit.block.data.type.Snow;
 import org.bukkit.command.CommandSender;
@@ -1051,6 +1053,32 @@ public final class SelfTest extends BukkitRunnable {
                 return Result.fail(fmt("Schaden im Rangiertempo: %.1f von 10", cow.getHealth()));
             }
             return Result.pass(fmt("%.2f Bloecke im Rangiertempo, Kuh unverletzt", maxZ(run)));
+        });
+
+        // 26 — Reifenrauch: Particle.BLOCK erwartet BlockData als Payload. Faellt die Paper-API
+        // das jemals um, wirft spawnParticle eine IllegalArgumentException — im Spiel ein
+        // stiller Serverfehler im Log statt eines sichtbaren Effekts. Hier headless geprueft,
+        // fuer eine Auswahl der Materialien, die tatsaechlich unter Raedern vorkommen.
+        add("tire-smoke-particle", false, 0, 0, false, lane -> {
+        }, run -> {
+            List<String> errors = new ArrayList<>();
+            if (Particle.BLOCK.getDataType() != BlockData.class) {
+                errors.add("Particle.BLOCK erwartet " + Particle.BLOCK.getDataType() + " statt BlockData");
+            }
+            World world = run.lane().world();
+            for (Material m : List.of(Material.STONE, Material.GRASS_BLOCK, Material.FARMLAND,
+                    Material.ICE, Material.DIRT, Material.WHITE_CONCRETE)) {
+                try {
+                    world.spawnParticle(Particle.BLOCK, run.lane().baseX(), GROUND_Y, run.lane().baseZ(),
+                            1, 0.1, 0.02, 0.1, 0.0, m.createBlockData());
+                } catch (RuntimeException e) {
+                    errors.add(m + ": " + e.getMessage());
+                }
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Particle.BLOCK akzeptiert BlockData, 6 Materialien ohne Fehler");
         });
 
         // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel

@@ -39,6 +39,10 @@ sich per Befehl **live** ändern — ohne Restart.
 | **Sneak** | Aussteigen |
 | Schlag aufs Auto | Abbauen (nur wenn niemand fährt), Item droppt — im Kreativmodus nicht, dort kostet das Platzieren ja auch keines |
 
+Nahe am Grip-Limit (Traktionskreis, ≥85 %) staubt es unter den Reifen — die Partikel kommen
+aus dem Untergrundblock selbst, Farbe und Textur passen sich also automatisch an (Gras, Beton,
+Schnee, …).
+
 In der Actionbar laufen ein Strich-Tacho (km/h, `R` bei Rückwärtsfahrt) und optional ein
 Grip-Budget-Balken: ≥ 100 % heißt, die Reifen sind am Limit (Quer- **und** Pedalkraft
 zusammen, Traktionskreis).
