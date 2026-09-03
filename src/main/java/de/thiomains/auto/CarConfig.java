@@ -23,7 +23,8 @@ public final class CarConfig {
             "turn-curvature", "turn-min-speed", "downhill-assist", "slope-resistance",
             "crash-restitution", "crash-spin", "tip-acceleration", "max-sink-speed",
             "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
-            "horn-pitch", "horn-range"
+            "horn-pitch", "horn-range",
+            "impact-damage", "impact-min-speed", "impact-knockback"
     );
     public static final List<String> BOOL_KEYS = List.of(
             "understeer-sound-enabled", "field-damage-enabled", "debug", "debug-wheels");
@@ -67,6 +68,12 @@ public final class CarConfig {
     public boolean understeerSound;
     /** Pflanzen brechen beim Umfahren, Ackerland wird unter den Raedern zu Erde. */
     public boolean fieldDamage;
+    /** Schaden beim Anfahren, gerechnet bei 100 km/h (0 = Lebewesen bleiben unbehelligt). */
+    public double impactDamage;
+    /** Ab diesem Tempo tut das Anfahren weh (Bloecke/Tick). */
+    public double impactMinSpeed;
+    /** Anteil der Fahrzeuggeschwindigkeit, der als Stoss weitergegeben wird. */
+    public double impactKnockback;
     /** Sound der Hupe (Config-Key horn-sound, aufgeloest ueber die Sound-Registry). */
     public Sound hornSound;
     public double hornPitch;
@@ -115,6 +122,9 @@ public final class CarConfig {
         hornPitch = clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
         hornRange = clampHumanValue("horn-range", c.getDouble("horn-range", 80.0));
         hornSound = resolveHornSound(c.getString("horn-sound"));
+        impactDamage = clampHumanValue("impact-damage", c.getDouble("impact-damage", 12.0));
+        impactMinSpeed = kmh(clampHumanValue("impact-min-speed", c.getDouble("impact-min-speed", 15.0)));
+        impactKnockback = clampHumanValue("impact-knockback", c.getDouble("impact-knockback", 60.0)) / 100.0;
         debug = c.getBoolean("debug", false);
         debugWheels = c.getBoolean("debug-wheels", false);
     }
@@ -145,6 +155,11 @@ public final class CarConfig {
             case "drag" -> clamp(value, 0.0, 100.0);
             // Pitch-Bereich des Protokolls; 0 ist erlaubt und gewollt (siehe understeer-sound-enabled).
             case "horn-pitch" -> clamp(value, 0.0, 2.0);
+            // Schaden in Schadenspunkten (2 = ein Herz) bei 100 km/h; 20 legt einen Spieler
+            // ohne Ruestung genau um, mehr als 200 waere nur noch Zahlenspielerei.
+            case "impact-damage" -> clamp(value, 0.0, 200.0);
+            case "impact-min-speed" -> clamp(value, 0.0, 200.0);
+            case "impact-knockback" -> clamp(value, 0.0, 300.0);
             // Obergrenze ist Serverschutz, kein Geschmack: der Sound geht an JEDEN Spieler im Radius.
             case "horn-range" -> clamp(value, 1.0, 160.0);
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip" ->

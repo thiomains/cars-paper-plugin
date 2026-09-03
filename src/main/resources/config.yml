@@ -10,7 +10,7 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 12
+config-version: 13
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 170.0
@@ -63,6 +63,14 @@ grip-default: 70.0
 handbrake-grip: 50.0
 # Quietsch-Sound bei Untersteuern/Schlupf (hiess bis config-version 10 understeer-sound)
 understeer-sound-enabled: false
+# Anfahren: Schaden fuer Mobs und Spieler in Schadenspunkten (2 = ein Herz), gerechnet bei
+# 100 km/h und linear zum Tempo. 0 schaltet es ab. Der Schaden laeuft ueber den Fahrer, also
+# greifen PvP-Flags und Schutz-Plugins.
+impact-damage: 12.0
+# Erst ab diesem Tempo tut das Anfahren weh (km/h) — darunter ist es Rangieren
+impact-min-speed: 15.0
+# Wegstossen in Prozent der Fahrzeuggeschwindigkeit (serverseitig auf ~50 km/h gedeckelt)
+impact-knockback: 60.0
 # Feldschaden: Nutzpflanzen gehen beim Umfahren kaputt (mit Drop) und Ackerland wird unter
 # den Raedern zu Erde. Beides laeuft ueber EntityChangeBlockEvent, Schutz-Plugins koennen es
 # also abfangen.

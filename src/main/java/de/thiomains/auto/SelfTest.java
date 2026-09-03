@@ -8,6 +8,9 @@ import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.data.type.Snow;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Cow;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
@@ -69,6 +72,8 @@ public final class SelfTest extends BukkitRunnable {
 
     private final List<Scenario> scenarios = new ArrayList<>();
     private final List<Car> extraCars = new ArrayList<>();
+    /** Lebewesen, die ein Szenario in die Bahn stellt (Aufprall-Tests). */
+    private final List<Entity> extraEntities = new ArrayList<>();
     private final Map<String, Double> measurements = new LinkedHashMap<>();
 
     /** Ein laufender Fall mit seiner Bahn, seinem Auto und seinen Tick-Werten. */
@@ -950,6 +955,81 @@ public final class SelfTest extends BukkitRunnable {
             return Result.pass(fmt("%.1f Bloecke gefahren, Acker unberuehrt", reached));
         });
 
+        // 24 — Anfahren: Schaden und Wegstossen. Zwei Vorkehrungen, damit der Fall nicht
+        // wackelt. Erstens ist der Schaden auf 1 gedrosselt: mit dem Default ueberlebt eine
+        // Kuh den Treffer nicht und liegt danach an der Aufprallstelle statt am Flugziel.
+        // Zweitens endet das Szenario KURZ nach dem Treffer (Kontakt liegt bei Tick ~5):
+        // eine Kuh hat ihre KI und laeuft mit bis zu 0,2 Bloecken je Tick irgendwohin — nach
+        // 20 Ticks ist dieses Rauschen groesser als der Stoss, den wir messen wollen
+        // (gemessen: 3,12 Bloecke im Einzellauf gegen 1,41 im vollen Lauf, gleicher Treffer).
+        add("impact-mob", false, 10, 1.2, false, lane -> {
+            config.impactDamage = 1.0;
+            track(lane, -4, 20, GROUND_Y - 1, Material.STONE);
+            // Breiter Boden rund um die Kuh: sie hat ihre KI und liefe sonst von der Bahn.
+            for (int z = 2; z <= 16; z++) {
+                for (int x = lane.baseX() - 5; x <= lane.baseX() + 5; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+            }
+            wall(lane, 20, GROUND_Y);
+            Cow cow = lane.world().spawn(new Location(lane.world(), lane.baseX() + 0.5,
+                    GROUND_Y, lane.baseZ() + 6.5), Cow.class);
+            cow.setRemoveWhenFarAway(false);
+            extraEntities.add(cow);
+        }, run -> {
+            if (extraEntities.isEmpty() || !(extraEntities.get(0) instanceof LivingEntity cow)) {
+                return Result.fail("Kuh fehlt");
+            }
+            List<String> errors = new ArrayList<>();
+            double health = cow.getHealth();
+            double z = cow.getLocation().getZ() - run.lane().baseZ();
+            if (cow.isDead()) {
+                errors.add("Kuh tot — der gedrosselte Schaden haette sie nicht umbringen duerfen");
+            } else if (health >= 10.0) {
+                errors.add(fmt("kein Schaden: %.1f von 10 Herzpunkten", health));
+            }
+            if (z < 8.0) {
+                errors.add(fmt("nicht weggestossen: z=%.2f, Startpunkt war 6,5", z));
+            }
+            if (maxZ(run) < 5.5) {
+                errors.add(fmt("das Auto blieb an der Kuh haengen (z=%.2f)", maxZ(run)));
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(fmt("%s (Leben %.1f, tot=%b, z=%.2f)",
+                        String.join(" | ", errors), health, cow.isDead(), z));
+            }
+            return Result.pass(fmt("Kuh auf %.1f Herzpunkte und %.2f Bloecke weit gestossen",
+                    health, z - 6.5));
+        });
+
+        // 25 — unter impact-min-speed (15 km/h) bleibt alles unbehelligt: Rangieren tut nicht weh.
+        add("impact-langsam", false, 60, 0.15, false, lane -> {
+            track(lane, -4, 20, GROUND_Y - 1, Material.STONE);
+            for (int z = 0; z <= 8; z++) {
+                for (int x = lane.baseX() - 5; x <= lane.baseX() + 5; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y - 1, lane.baseZ() + z)
+                            .setType(Material.STONE, false);
+                }
+            }
+            wall(lane, 20, GROUND_Y);
+            Cow cow = lane.world().spawn(new Location(lane.world(), lane.baseX() + 0.5,
+                    GROUND_Y, lane.baseZ() + 2.5), Cow.class);
+            cow.setRemoveWhenFarAway(false);
+            extraEntities.add(cow);
+        }, run -> {
+            if (extraEntities.isEmpty() || !(extraEntities.get(0) instanceof LivingEntity cow)) {
+                return Result.fail("Kuh fehlt");
+            }
+            if (maxZ(run) < 1.3) {
+                return Result.fail(fmt("das Auto hat die Kuh gar nicht erreicht (z=%.2f)", maxZ(run)));
+            }
+            if (cow.getHealth() < 10.0 || cow.isDead()) {
+                return Result.fail(fmt("Schaden im Rangiertempo: %.1f von 10", cow.getHealth()));
+            }
+            return Result.pass(fmt("%.2f Bloecke im Rangiertempo, Kuh unverletzt", maxZ(run)));
+        });
+
         // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel
         // und einen breiten Querschnitt echter Bloecke.
         driverInputs();
@@ -1211,6 +1291,10 @@ public final class SelfTest extends BukkitRunnable {
             }
         }
         extraCars.clear();
+        for (Entity extra : extraEntities) {
+            extra.remove();
+        }
+        extraEntities.clear();
     }
 
     /** Eine Ergebniszeile je Szenario; bei Sweeps zusaetzlich eine Zeile je auffaelligem Fall. */
@@ -2229,6 +2313,9 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("handbrake-grip", Unit.PROZENT),
             Map.entry("turn-curvature", Unit.ROH),
             Map.entry("horn-pitch", Unit.ROH),
+            Map.entry("impact-damage", Unit.ROH),
+            Map.entry("impact-min-speed", Unit.KMH),
+            Map.entry("impact-knockback", Unit.PROZENT),
             Map.entry("horn-range", Unit.ROH));
 
     private void configAndRegistry() {
@@ -2618,6 +2705,9 @@ public final class SelfTest extends BukkitRunnable {
             case "turn-curvature" -> config.turnCurvature;
             case "tip-acceleration" -> config.tipAcceleration;
             case "horn-pitch" -> config.hornPitch;
+            case "impact-damage" -> config.impactDamage;
+            case "impact-min-speed" -> config.impactMinSpeed;
+            case "impact-knockback" -> config.impactKnockback;
             case "horn-range" -> config.hornRange;
             default -> Double.NaN;
         };

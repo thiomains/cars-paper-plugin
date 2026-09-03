@@ -417,14 +417,15 @@ public final class CarCommand implements BasicCommand {
 
     private String unitSuffix(String key) {
         return switch (key) {
-            case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed", "max-sink-speed" -> " km/h";
+            case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed", "max-sink-speed",
+                 "impact-min-speed" -> " km/h";
             case "acceleration", "reverse-acceleration", "brake-deceleration", "handbrake-deceleration",
                  "engine-braking", "max-lateral-grip", "downhill-assist" -> " m/s²";
             case "drag" -> " %/s";
             case "turn-curvature" -> " °/m";
             case "horn-range" -> " Blöcke";
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
-                 "slope-resistance", "crash-restitution", "crash-spin" -> " %";
+                 "slope-resistance", "crash-restitution", "crash-spin", "impact-knockback" -> " %";
             default -> "";
         };
     }

@@ -88,7 +88,7 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 12`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+`config.yml` (`config-version: 13`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
 auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
@@ -103,8 +103,17 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Gelände | `downhill-assist`, `slope-resistance` |
 | Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
 | Hupe | `horn-sound`, `horn-pitch`, `horn-range` |
+| Anfahren | `impact-damage`, `impact-min-speed`, `impact-knockback` |
 | Feld | `field-damage-enabled` |
 | Sonstiges | `understeer-sound-enabled`, `debug`, `debug-wheels` |
+
+Wer angefahren wird, nimmt Schaden und fliegt zur Seite: `impact-damage` ist der Schaden in
+Schadenspunkten (2 = ein Herz) **bei 100 km/h** und skaliert linear mit dem Tempo, `0` schaltet
+es ab. Unter `impact-min-speed` (Standard 15 km/h) passiert nichts — Rangieren tut nicht weh.
+`impact-knockback` ist der Anteil der Fahrzeuggeschwindigkeit, der als Stoß weitergegeben wird
+(serverseitig auf rund 50 km/h gedeckelt). Der Schaden läuft über den Fahrer, also greifen
+PvP-Flags und Schutz-Plugins; Mitfahrer und Rüstungsständer sind ausgenommen. Das Auto wird
+davon **nicht** langsamer.
 
 `field-damage-enabled` (Standard an) heißt: Nutzpflanzen gehen beim Umfahren kaputt und
 droppen, und Ackerland wird unter den Rädern zu Erde. Beides läuft über

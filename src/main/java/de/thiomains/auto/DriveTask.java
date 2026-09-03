@@ -14,11 +14,13 @@ import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Transformation;
+import org.bukkit.util.Vector;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
@@ -72,6 +74,15 @@ public final class DriveTask extends BukkitRunnable {
     // (g x slope-resistance). Wer oben langsam ankommt, haengt dann in einer Rueckkopplung fest
     // — kaum Beschleunigung, kaum Strecke, Schuld bleibt. Auf der Ebene 1 km/h, live gesehen.
     private static final double SLOPE_DEBT_FADE = 0.90;
+    /** Hoehe der Karosserie (dieselbe 1,8 wie die Klick-Hitbox in CarManager). */
+    private static final double BODY_HEIGHT = 1.8;
+    /** Deckel des Wegstossens in Bloecken/Tick (~50 km/h) — sonst fliegt ein Schaf ueber die halbe Karte. */
+    private static final double IMPACT_KNOCKBACK_MAX = 0.7;
+    /** Anteil des Stosses, der nach oben geht. Nicht Deko, sondern der Grund, warum man vom
+     *  Stoss ueberhaupt etwas sieht: am Boden frisst die Reibung die Querbewegung binnen
+     *  weniger Ticks (0,6 je Tick), in der Luft nur 0,09. Wer angefahren wird, hebt ab und
+     *  fliegt dann weit — ohne Auftrieb bleibt es bei einem halben Block Geschubse. */
+    private static final double IMPACT_LIFT = 0.5;
     private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
     private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
     private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
@@ -475,6 +486,11 @@ public final class DriveTask extends BukkitRunnable {
                 targetY = lifted;
                 base.teleport(new Location(world, targetX, targetY, targetZ, yaw, 0f));
             }
+        }
+
+        // Anfahren: Schaden und Wegstossen fuer alles Lebende in der Karosserie.
+        if (config.impactDamage > 0 && moved) {
+            hitEntities(world, car, targetX, targetY, targetZ, yaw, vx, vz);
         }
 
         // Modell-Neigung und Quer-Neigung, beides EMA-geglaettet. Reine Optik — die Physik
@@ -1051,6 +1067,58 @@ public final class DriveTask extends BukkitRunnable {
      * Aufstandshoehe), rot = Rad haengt (Punkt auf Achshoehe), blau = die acht Karosserie-Punkte
      * auf Fahrniveau, die gegen Waende blockieren.
      */
+    /**
+     * Schaden und Wegstossen fuer Lebewesen in der Karosserie. Die Suche laeuft ueber eine
+     * achsenparallele Box (die kennt der Server billig) und filtert danach auf das
+     * yaw-gedrehte Rechteck der Karosserie — sonst trifft das Auto quer neben sich.
+     * Der Schaden geht ueber {@code damage(amount, damager)}: damit feuert ein
+     * EntityDamageByEntityEvent, PvP-Flags und Schutz-Plugins greifen, und die
+     * Vanilla-Unverwundbarkeit (10 Ticks) uebernimmt den Cooldown, ohne dass wir buchfuehren.
+     * Der Verursacher ist der Fahrer, sonst das Auto selbst.
+     * Das Auto wird davon NICHT langsamer — es pfluegt durch. Bewusst so: eine Impulsbilanz
+     * ueber Mobs waere ein eigenes Fass und macht das Fahrgefuehl schwammig.
+     */
+    private void hitEntities(World world, Car car, double x, double y, double z, float carYaw,
+                             double vx, double vz) {
+        double speed = Math.hypot(vx, vz);
+        if (speed < config.impactMinSpeed) {
+            return;
+        }
+        double yawRad = Math.toRadians(carYaw);
+        double fwdX = -Math.sin(yawRad);
+        double fwdZ = Math.cos(yawRad);
+        double sideX = fwdZ;
+        double sideZ = -fwdX;
+        Entity source = car.getDriver() != null ? car.getDriver() : car.getBase();
+        BoundingBox search = new BoundingBox(x - LONG_HALF, y - 0.5, z - LONG_HALF,
+                x + LONG_HALF, y + BODY_HEIGHT, z + LONG_HALF);
+        for (Entity entity : world.getNearbyEntities(search)) {
+            if (!(entity instanceof LivingEntity living) || entity instanceof ArmorStand) {
+                // Ruestungsstaender sind Deko, kein Lebewesen — die bleiben stehen.
+                continue;
+            }
+            if (carManager.isCarPart(entity) || entity == source || entity.getVehicle() != null) {
+                // Wer mitfaehrt, wird nicht ueberfahren — auch nicht im eigenen Auto.
+                continue;
+            }
+            double dx = entity.getLocation().getX() - x;
+            double dz = entity.getLocation().getZ() - z;
+            if (Math.abs(dx * fwdX + dz * fwdZ) > LONG_HALF
+                    || Math.abs(dx * sideX + dz * sideZ) > LAT_HALF) {
+                continue;
+            }
+            if (living.getNoDamageTicks() > 0) {
+                // Vanilla-Unverwundbarkeit laeuft noch: weder Schaden noch erneuter Stoss.
+                continue;
+            }
+            // Schaden linear zum Tempo: config.impactDamage gilt bei 100 km/h.
+            double kmh = speed * 72.0;
+            living.damage(config.impactDamage * kmh / 100.0, source);
+            double push = Math.min(speed * config.impactKnockback, IMPACT_KNOCKBACK_MAX);
+            living.setVelocity(new Vector(vx / speed * push, push * IMPACT_LIFT, vz / speed * push));
+        }
+    }
+
     /**
      * Was das Auto auf einem Acker anrichtet — dieselbe Aufteilung wie bei der Kollision:
      * Pflanzen brechen unter der KAROSSERIE (sie blockieren nicht, das Auto faehrt hindurch),
