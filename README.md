@@ -4,7 +4,7 @@ Fahrbare Autos für Minecraft als Paper-Plugin — mit einer Fahrphysik, die auf
 echten Geschwindigkeitsvektor beruht: Grip pro Rad, Traktionskreis, Schlupf, Driften,
 Stufen, Steigungen und Crashs mit Drehimpuls.
 
-- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.5.0**
+- **Plugin:** `Auto` (`de.thiomains:auto`), aktuell **1.6.0**
 - **Server:** Paper, `api-version: '26.2'` (Minecraft 26.2)
 - **Java:** 25
 - **Build:** Maven, kein Testframework, kein CI

@@ -1,74 +1,35 @@
 # TODO — offene Ideen
 
-Gesammelt am 2026-09-02, noch nichts davon umgesetzt. Reihenfolge = Aufwand aufsteigend.
-(Die Hupe stand hier als Punkt 5 und ist in 1.5.0 umgesetzt.)
-Jeder Punkt nennt die Code-Stelle, an der er landet, und die Fragen, die vor der Umsetzung
-zu klären sind. Konventionen siehe `AGENTS.md`.
+Die vier gesammelten Punkte (Farmland, Crops, Mobs/Spieler, Auto-Auto) sind in **1.6.0**
+umgesetzt, die Hupe in 1.5.0. Was hier steht, ist **nur gesammelt und noch nicht entschieden** —
+keiner der Punkte ist beauftragt.
 
-## 1. Farmland wird beim Drüberfahren zu Erde
+## Anschlüsse an das, was jetzt drin ist
 
-Wie Vanilla-Trampling, nur durch das Auto statt durch Sprünge.
+- **Fahrer nimmt bei hartem Crash Schaden.** Aussen tut das Auto inzwischen weh, der Fahrer
+  steigt aus einem 170-km/h-Frontalcrash unversehrt aus. Die Aufprall-Geschwindigkeit liegt in
+  `DriveTask.resolveCrashVelocity` schon vor, es fehlen Schwelle und Schaden auf
+  `car.getDriver()`.
+- **Zerbrechliche Blöcke beim Crash.** Glas, Blätter, Zäune, Blumentöpfe blockieren wie Beton.
+  Dieselbe Schleife wie `damageField`, nur mit Materialliste und Tempo-Schwelle.
+- **Schaden am Auto selbst.** Crashs kosten nichts — man rammt beliebig oft eine Wand. Ein
+  Zustandswert im PDC (summierte Crash-Energie), der ab einem Schwellwert das Auto zerstört
+  oder die Höchstgeschwindigkeit drückt. Der Punkt mit dem meisten Spieldesign drin.
 
-- **Wo:** neuer Schritt in `DriveTask` nach der Bewegung, über die **Aufstandsfläche**
-  (`SUPPORT_*`, die Räder — nicht die Karosserie): Block unter jedem tragenden Rad, wenn
-  `FARMLAND` → `DIRT`.
-- **Fallen:**
-  - Grip ändert sich dabei mit: `GripCalculator` führt `FARMLAND` unter `grip-grass` (50 %),
-    `DIRT` fällt auf `grip-default` (70 %). Der Untergrund wird also mitten in der Fahrt
-    griffiger.
-  - Der Selftest baut in vielen Szenarien Farmland-Bahnen (`step-up-1-from-farmland`,
-    `step-micro-farmland-*`, `SelfTest.java:641/659/682/700/715`). Wenn Fahren den Belag
-    umwandelt, prüfen die Fälle ab Sample 2 einen anderen Untergrund → Erwartungen nachziehen.
-  - Pflanze darüber muss mitgehen (Vanilla dropt sie) → hängt an Punkt 2.
-- **Offen:** nur bei Bodenkontakt/ab welchem Tempo? Config-Schalter oder immer an?
+## Eigenständig
 
-## 2. Crops gehen beim Umfahren kaputt
-
-- **Wo:** dieselbe Schleife wie Punkt 1, aber über die **Karosserie** (`GRID_*`, ±1,25/±0,9)
-  und die Zelle auf Fahrniveau statt darunter — Weizen & Co. blockieren nicht (`isPassable`),
-  das Auto fährt hindurch.
-- **Offen:**
-  - Drops ja/nein — `Block.breakNaturally()` (droppt, Item-Flut auf großen Feldern) vs.
-    `setType(AIR, false)` (spurlos). Vorschlag: `breakNaturally`, aber nur ab einem Mindesttempo.
-  - Welche Blöcke? Nur `Ageable` (Weizen, Karotten, Kartoffeln, Rüben) oder alles Zerbrechliche
-    (Gräser, Blumen, Fackeln, Melonen-/Kürbisstiele)?
-  - Schutz-Plugins: Blockänderungen des Autos gehen aktuell an keinem Event vorbei — für
-    WorldGuard & Co. bräuchte es ein `BlockBreakEvent` mit dem Fahrer als Verursacher.
-  - Bremst Ernte das Auto? (Vorschlag: nein, sonst wird jedes Feld zur Schlammgrube.)
-
-## 3. Mobs und Spieler nehmen beim Umfahren Schaden und werden weggestoßen
-
-- **Wo:** neuer Schritt pro Tick in `DriveTask`, `world.getNearbyEntities` um die Karosserie-Box
-  (2,5 × 1,8 × 2,5, yaw-gedreht).
-- **Auszuschließen:** eigene Teile (`carManager.isCarPart`), Fahrer und Passagiere
-  (`Car.getBase().getPassengers()`), andere Autos (die sind Punkt 4).
-- **Offen:**
-  - Schadensformel: proportional zur Aufprallgeschwindigkeit, unterhalb `CRASH_MIN_SPEED`
-    (~5 km/h) gar nichts — sonst schiebt ein rangierendes Auto Schafe zu Tode.
-  - Wegstoßen über `setVelocity` in Fahrtrichtung + Auswärtskomponente; Deckel nötig, sonst
-    fliegen Mobs über die halbe Karte.
-  - Verursacher-Zuordnung: Schaden über den Fahrer (`EntityDamageByEntityEvent` mit dem Spieler)
-    oder anonym? Ersteres respektiert PvP-Flags und schreibt eine sinnvolle Todesmeldung.
-  - Bremst der Treffer das Auto (Impulserhaltung) oder pflügt es ungebremst durch?
-  - Cooldown pro Entity, sonst trifft dasselbe Ziel bei 20 TPS zwanzigmal je Sekunde.
-
-## 4. Andere Autos werden bei Unfällen abgestoßen
-
-Heute ist ein anderes Auto nur eine Wand: `nearOtherCar` blockiert, `resolveCrashVelocity`
-gibt dem **Auffahrenden** halbe Restitution und keinen Spin (`impactAxis() == 3`) — das
-getroffene Auto merkt nichts.
-
-- **Wo:** `DriveTask.resolveCrashVelocity` (`:721`) plus `StepResult` (`:1230`): der Record führt
-  bisher nur die Achse `3`, nicht das getroffene `Car`. Für die Impulsübertragung muss die
-  Referenz mit — `otherCarLocations` (`:915`) liefert dafür schon die Kandidaten, gibt aber nur
-  `Location`s zurück.
-- **Offen:**
-  - Impulsmodell: einfacher Stoß (Anteil der Achsen-Geschwindigkeit auf das Ziel addieren) oder
-    ein echter Zweikörperstoß über die Verbindungsachse? Empfehlung: Verbindungsachse, sonst
-    schiebt ein seitlicher Streifer geradeaus.
-  - Bekommt das getroffene Auto auch Drehimpuls (`spinVel`)? Bei Wänden gibt es den, bei Autos
-    ist er bewusst abgeschaltet — für Rempler wäre er reizvoll.
-  - Kein Doppel-Impuls: beide Autos ticken im selben Task, der Stoß darf nicht in beiden
-    Richtungen einmal voll gerechnet werden.
-  - Selftest: `car-car` (`SelfTest.java:360`) prüft heute nur, dass geblockt wird — braucht
-    einen Fall „getroffenes Auto bewegt sich".
+- **`/car config <key> default` bzw. `reset`.** Geänderte Default-Werte erreichen einen
+  bestehenden Server nie (`carryOver` übernimmt jeden gemeinsamen Key); heute hilft nur, die
+  `config.yml` zu löschen. Die Defaults stehen in `CarConfig.reload()` schon ausgeschrieben und
+  müssten nur in eine Tabelle wandern, die Reload und Reset teilen. Billigste echte Verbesserung
+  auf dieser Liste.
+- **Motorgeräusch am Tempo.** Es gibt drei Sounds (harte Landung, Untersteuern, Hupe). Ein
+  tempoabhängiger Loop bringt fürs Fahrgefühl mehr als jede weitere Physik-Feinheit; das
+  Cooldown-Muster über `tickCount` gibt es schon.
+- **Reifenrauch und Untergrund-Partikel.** `gripUsage` wird pro Tick berechnet und wandert
+  bisher nur in die Actionbar — ab ~100 % Partikel an den Rad-Aufstandspunkten, Typ nach
+  Material. Die Aufstandspunkte zeichnet `debug-wheels` bereits.
+- **Beifahrer.** `onEnterCar` weist jeden ab, sobald ein Fahrer sitzt; technisch passt mehr als
+  einer auf den ArmorStand. Braucht eine Entscheidung, wo Passagiere sitzen.
+- **Besitzer am Auto.** Im PDC stehen nur `auto:car` und der Part-Marker — jeder darf jedes Auto
+  fahren und abbauen.
