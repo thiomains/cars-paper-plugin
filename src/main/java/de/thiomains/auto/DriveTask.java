@@ -2,6 +2,7 @@ package de.thiomains.auto;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Input;
 import org.bukkit.Location;
@@ -10,8 +11,11 @@ import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Transformation;
@@ -20,6 +24,7 @@ import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Per-Tick-Fahrphysik aller registrierten Autos.
@@ -95,6 +100,14 @@ public final class DriveTask extends BukkitRunnable {
     // ein Rad neben einem Bordstein faehrt — und traegt trotzdem.
     private static final double AXLE_TRAVEL = 0.5;
     private static final double MODEL_MAX_SINK = 1.5; // wie tief das Modell unter das Fahrniveau darf
+    /** Was das Auto umfaehrt. Bewusst eine feste Liste statt "alles Ageable": darunter fielen
+     *  auch Zuckerrohr und Kaktus, und Gras oder Blumen sollen stehen bleiben. */
+    private static final Set<Material> CROPS = Set.of(
+            Material.WHEAT, Material.CARROTS, Material.POTATOES, Material.BEETROOTS,
+            Material.NETHER_WART, Material.TORCHFLOWER_CROP, Material.PITCHER_CROP,
+            Material.MELON_STEM, Material.PUMPKIN_STEM,
+            Material.ATTACHED_MELON_STEM, Material.ATTACHED_PUMPKIN_STEM);
+
     private static final double[] SUPPORT_LONG = {-0.7, 0.0, 0.7};
     private static final double[] SUPPORT_LAT = {-0.7, 0.0, 0.7};
 
@@ -446,6 +459,21 @@ public final class DriveTask extends BukkitRunnable {
             if (turned) {
                 // Display rotiert mit, damit das Modell in Fahrtrichtung zeigt
                 car.getModel().setRotation(yaw, 0f);
+            }
+        }
+
+        // Feldschaden: Pflanzen brechen, Ackerland wird zu Erde. Nur wenn sich das Auto auch
+        // bewegt hat — ein parkendes Auto pfluegt kein Feld um.
+        if (config.fieldDamage && moved) {
+            double lifted = damageField(world, car, targetX, targetY, targetZ, yaw);
+            if (lifted > targetY && lifted <= targetY + MAX_STEP) {
+                // Ackerland ist 0,9375 hoch, Erde 1,0: der Boden unter dem Auto STEIGT beim
+                // Umpfluegen um 1/16. Ohne diese Korrektur steht das Auto bis zum naechsten
+                // Tick in seinem eigenen Untergrund — und genau dann meldet embedded() ein
+                // Steckenbleiben und setzt die Kollision aus (Tunnel-Gefahr an einem Zaun am
+                // Feldrand). Wer den Boden unter sich anhebt, steht danach auch darauf.
+                targetY = lifted;
+                base.teleport(new Location(world, targetX, targetY, targetZ, yaw, 0f));
             }
         }
 
@@ -1023,6 +1051,83 @@ public final class DriveTask extends BukkitRunnable {
      * Aufstandshoehe), rot = Rad haengt (Punkt auf Achshoehe), blau = die acht Karosserie-Punkte
      * auf Fahrniveau, die gegen Waende blockieren.
      */
+    /**
+     * Was das Auto auf einem Acker anrichtet — dieselbe Aufteilung wie bei der Kollision:
+     * Pflanzen brechen unter der KAROSSERIE (sie blockieren nicht, das Auto faehrt hindurch),
+     * Ackerland wird unter der AUFSTANDSFLAECHE zu Erde (dort steht das Gewicht auf dem Boden).
+     * Beides laeuft ueber {@link EntityChangeBlockEvent}, wie Vanilla es fuer trampelnde Mobs
+     * und den Ravager tut — Schutz-Plugins koennen es damit abfangen. Verursacher ist der
+     * Fahrer, wenn einer sitzt, sonst das Auto selbst (ein fuehrerloses Auto rollt seltener,
+     * aber es rollt).
+     */
+    private double damageField(World world, Car car, double x, double y, double z, float carYaw) {
+        double yawRad = Math.toRadians(carYaw);
+        double fwdX = -Math.sin(yawRad);
+        double fwdZ = Math.cos(yawRad);
+        double sideX = fwdZ;
+        double sideZ = -fwdX;
+        Entity source = car.getDriver() != null ? car.getDriver() : car.getBase();
+        for (double fl : GRID_LONG) {
+            for (double sl : GRID_LAT) {
+                int bx = floor(x + fwdX * fl + sideX * sl);
+                int bz = floor(z + fwdZ * fl + sideZ * sl);
+                // Die Pflanze steht je nach Belag auf Fahrniveau ODER eine Zelle darueber:
+                // Ackerland ist nur 0,9375 hoch, das Auto steht dann unter der Zellgrenze.
+                int feet = floor(y + 0.05);
+                breakCrop(world.getBlockAt(bx, feet, bz), source);
+                breakCrop(world.getBlockAt(bx, feet + 1, bz), source);
+            }
+        }
+        double lifted = Double.NEGATIVE_INFINITY;
+        for (double fl : SUPPORT_LONG) {
+            for (double sl : SUPPORT_LAT) {
+                int bx = floor(x + fwdX * fl + sideX * sl);
+                int bz = floor(z + fwdZ * fl + sideZ * sl);
+                int by = floor(y - 0.05);
+                if (trample(world.getBlockAt(bx, by, bz), source)) {
+                    // Erde ist ein voller Block: die neue Oberkante liegt bei by + 1.
+                    lifted = Math.max(lifted, by + 1.0);
+                }
+            }
+        }
+        return lifted;
+    }
+
+    /** Bricht eine Nutzpflanze samt Drop — wer sie umfaehrt, soll sie auch einsammeln koennen. */
+    private void breakCrop(Block block, Entity source) {
+        if (!CROPS.contains(block.getType())) {
+            return;
+        }
+        EntityChangeBlockEvent event =
+                new EntityChangeBlockEvent(source, block, Material.AIR.createBlockData());
+        Bukkit.getPluginManager().callEvent(event);
+        if (!event.isCancelled()) {
+            block.breakNaturally();
+        }
+    }
+
+    /** Ackerland unter einem Rad wird zu Erde, genau wie beim Vanilla-Trampeln.
+     *  Rueckgabe: true, wenn tatsaechlich umgewandelt wurde (der Boden steigt dann um 1/16). */
+    private boolean trample(Block block, Entity source) {
+        if (block.getType() != Material.FARMLAND) {
+            return false;
+        }
+        BlockData dirt = Material.DIRT.createBlockData();
+        EntityChangeBlockEvent event = new EntityChangeBlockEvent(source, block, dirt);
+        Bukkit.getPluginManager().callEvent(event);
+        if (event.isCancelled()) {
+            return false;
+        }
+        // Mit Physik-Update, damit eine Pflanze darueber wie in Vanilla abfaellt.
+        block.setBlockData(dirt, true);
+        return true;
+    }
+
+    /** true, wenn dieses Material vom Auto umgefahren wird (fuer den Selftest sichtbar). */
+    static boolean isCrop(Material material) {
+        return CROPS.contains(material);
+    }
+
     private Wheels probeWheels(World world, double x, double y, double z, float carYaw, boolean draw) {
         double yawRad = Math.toRadians(carYaw);
         double fwdX = -Math.sin(yawRad);

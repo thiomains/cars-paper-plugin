@@ -432,6 +432,7 @@ public final class CarCommand implements BasicCommand {
     private boolean boolValue(String key) {
         return switch (key) {
             case "understeer-sound-enabled" -> carConfig.understeerSound;
+            case "field-damage-enabled" -> carConfig.fieldDamage;
             case "debug-wheels" -> carConfig.debugWheels;
             default -> carConfig.debug;
         };

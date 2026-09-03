@@ -148,7 +148,11 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("grip-ice", 15.0),
             Map.entry("grip-default", 80.0),
             Map.entry("handbrake-grip", 35.0),
-            Map.entry("understeer-sound-enabled", true));
+            Map.entry("understeer-sound-enabled", true),
+            // Aus, sonst pfluegt die Physik-Suite ihre eigenen Ackerland-Bahnen um und misst
+            // ab dem zweiten Sample auf Erde (anderer Grip). Der Feldschaden-Fall schaltet
+            // ihn fuer sich selbst ein.
+            Map.entry("field-damage-enabled", false));
 
     /** Startet den Lauf; false, wenn bereits einer läuft. */
     public boolean start() {
@@ -864,6 +868,86 @@ public final class SelfTest extends BukkitRunnable {
                         rebound));
             }
             return Result.pass(fmt("harter Stopp bei z=%.3f ohne Abpraller (%.3f)", contact, rebound));
+        });
+
+        // 22 — Feldschaden: Weizen faellt, Ackerland wird zu Erde. Der Schalter steht in der
+        // gepinnten Config auf false (sonst pfluegt die Physik-Suite ihre eigenen
+        // Ackerland-Bahnen um); hier wird er fuer dieses eine Szenario eingeschaltet.
+        add("field-damage", false, 100, 1.2, false, lane -> {
+            plugin.getConfig().set("field-damage-enabled", true);
+            config.reload();
+            track(lane, -4, 20, GROUND_Y - 1, Material.FARMLAND);
+            for (int z = 4; z <= 12; z++) {
+                for (int x = lane.baseX() - 2; x <= lane.baseX() + 2; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y, lane.baseZ() + z).setType(Material.WHEAT, false);
+                }
+            }
+            wall(lane, 20, GROUND_Y);
+        }, run -> {
+            Lane lane = run.lane();
+            double reached = maxZ(run);
+            if (reached < 8.0) {
+                return Result.fail(fmt("nur %.3f Bloecke weit — die Strecke wurde nicht befahren", reached));
+            }
+            List<String> errors = new ArrayList<>();
+            int crops = 0;
+            int farmland = 0;
+            // Nur die tatsaechlich befahrene Strecke pruefen, nicht den Rest der Bahn.
+            for (int z = 4; z <= (int) reached - 1; z++) {
+                if (lane.world().getBlockAt(lane.baseX(), GROUND_Y, lane.baseZ() + z).getType()
+                        == Material.WHEAT) {
+                    crops++;
+                }
+                if (lane.world().getBlockAt(lane.baseX(), GROUND_Y - 1, lane.baseZ() + z).getType()
+                        == Material.FARMLAND) {
+                    farmland++;
+                }
+            }
+            if (crops > 0) {
+                errors.add(crops + " Weizenbloecke stehen noch auf der Spur");
+            }
+            if (farmland > 0) {
+                errors.add(farmland + " Ackerland-Bloecke unter der Spur nicht zu Erde geworden");
+            }
+            // Neben der Bahn (x+2 ist die Kante, x+3 waere ausserhalb) muss alles stehen
+            // bleiben: das Auto ist 1,8 breit, es raeumt nicht die halbe Welt ab.
+            if (lane.world().getBlockAt(lane.baseX() + 3, GROUND_Y - 1, lane.baseZ() + 6).getType()
+                    != Material.AIR) {
+                errors.add("neben der Bahn steht unerwartet Boden");
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass(fmt("%.1f Bloecke Acker umgepfluegt: Weizen weg, Ackerland zu Erde",
+                    reached));
+        });
+
+        // 23 — ohne Fahrer und mit abgeschaltetem Schalter bleibt der Acker unberuehrt.
+        add("field-damage-aus", false, 100, 1.2, false, lane -> {
+            track(lane, -4, 20, GROUND_Y - 1, Material.FARMLAND);
+            for (int z = 4; z <= 12; z++) {
+                for (int x = lane.baseX() - 2; x <= lane.baseX() + 2; x++) {
+                    lane.world().getBlockAt(x, GROUND_Y, lane.baseZ() + z).setType(Material.WHEAT, false);
+                }
+            }
+            wall(lane, 20, GROUND_Y);
+        }, run -> {
+            Lane lane = run.lane();
+            double reached = maxZ(run);
+            if (reached < 8.0) {
+                return Result.fail(fmt("nur %.3f Bloecke weit — die Strecke wurde nicht befahren", reached));
+            }
+            for (int z = 4; z <= 8; z++) {
+                if (lane.world().getBlockAt(lane.baseX(), GROUND_Y, lane.baseZ() + z).getType()
+                        != Material.WHEAT) {
+                    return Result.fail("Weizen bei z=" + z + " trotz field-damage-enabled=false weg");
+                }
+                if (lane.world().getBlockAt(lane.baseX(), GROUND_Y - 1, lane.baseZ() + z).getType()
+                        != Material.FARMLAND) {
+                    return Result.fail("Ackerland bei z=" + z + " trotz field-damage-enabled=false umgewandelt");
+                }
+            }
+            return Result.pass(fmt("%.1f Bloecke gefahren, Acker unberuehrt", reached));
         });
 
         // 21-26 — Sweeps: systematisch ueber alle Stufenhoehen, Neigungen, Belagswechsel

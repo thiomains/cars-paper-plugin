@@ -88,7 +88,7 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 11`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+`config.yml` (`config-version: 12`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
 auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
@@ -103,7 +103,14 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Gelände | `downhill-assist`, `slope-resistance` |
 | Crash | `crash-restitution`, `crash-spin`, `tip-acceleration` |
 | Hupe | `horn-sound`, `horn-pitch`, `horn-range` |
+| Feld | `field-damage-enabled` |
 | Sonstiges | `understeer-sound-enabled`, `debug`, `debug-wheels` |
+
+`field-damage-enabled` (Standard an) heißt: Nutzpflanzen gehen beim Umfahren kaputt und
+droppen, und Ackerland wird unter den Rädern zu Erde. Beides läuft über
+`EntityChangeBlockEvent` — genau wie Vanilla es für trampelnde Mobs und den Ravager tut,
+Schutz-Plugins können es also abfangen. Gras, Blumen und Zuckerrohr bleiben stehen; die Liste
+der betroffenen Pflanzen ist bewusst fest.
 
 `horn-sound` ist ein Name aus der Vanilla-Sound-Registry (`minecraft:block.note_block.didgeridoo`
 ist der Standard); ein unbekannter Name wird mit einer Warnung im Log auf den Standard

@@ -25,7 +25,8 @@ public final class CarConfig {
             "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
             "horn-pitch", "horn-range"
     );
-    public static final List<String> BOOL_KEYS = List.of("understeer-sound-enabled", "debug", "debug-wheels");
+    public static final List<String> BOOL_KEYS = List.of(
+            "understeer-sound-enabled", "field-damage-enabled", "debug", "debug-wheels");
     /** Keys mit freiem Text als Wert. Dritte Kategorie neben Zahlen und Schaltern: Anzeige,
      *  Autocomplete, Permission-Nodes und Migration lesen alle drei Listen. */
     public static final List<String> STRING_KEYS = List.of("horn-sound");
@@ -64,6 +65,8 @@ public final class CarConfig {
     public double gripDefault;
     public double handbrakeGrip;
     public boolean understeerSound;
+    /** Pflanzen brechen beim Umfahren, Ackerland wird unter den Raedern zu Erde. */
+    public boolean fieldDamage;
     /** Sound der Hupe (Config-Key horn-sound, aufgeloest ueber die Sound-Registry). */
     public Sound hornSound;
     public double hornPitch;
@@ -108,6 +111,7 @@ public final class CarConfig {
         gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 70.0)) / 100.0;
         handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 50.0)) / 100.0;
         understeerSound = c.getBoolean("understeer-sound-enabled", false);
+        fieldDamage = c.getBoolean("field-damage-enabled", true);
         hornPitch = clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
         hornRange = clampHumanValue("horn-range", c.getDouble("horn-range", 80.0));
         hornSound = resolveHornSound(c.getString("horn-sound"));
