@@ -2577,6 +2577,102 @@ public final class SelfTest extends BukkitRunnable {
             }
         });
 
+        // Stille Korrekturen gibt es nicht: falscher Typ, Wert ausserhalb des Sinnbereichs und
+        // unbekannte Keys muessen alle als Klartext-Meldung herauskommen (Log + /car reload).
+        sweep.run("config-korrekturen", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            List<String> errors = new ArrayList<>();
+            try {
+                // Saubere Konfiguration meldet nichts.
+                config.reload();
+                if (!config.getLastCorrections().isEmpty()) {
+                    errors.add("saubere Config meldet: " + config.getLastCorrections());
+                }
+                // Falscher Typ -> Default, mit Ansage.
+                plugin.getConfig().set("max-speed", "schnell");
+                config.reload();
+                if (config.getLastCorrections().stream().noneMatch(m -> m.contains("max-speed")
+                        && m.contains("keine Zahl"))) {
+                    errors.add("falscher Typ nicht gemeldet: " + config.getLastCorrections());
+                }
+                if (config.maxSpeed <= 0) {
+                    errors.add("nach falschem Typ kein brauchbarer Default: " + config.maxSpeed);
+                }
+                // Ausserhalb des Sinnbereichs -> geklemmt, mit Ansage.
+                plugin.getConfig().set("max-speed", 100000.0);
+                config.reload();
+                if (config.getLastCorrections().stream().noneMatch(m -> m.contains("max-speed")
+                        && m.contains("Sinnbereichs"))) {
+                    errors.add("Klemmen nicht gemeldet: " + config.getLastCorrections());
+                }
+                // Falscher Typ bei einem Schalter.
+                plugin.getConfig().set("debug", "vielleicht");
+                config.reload();
+                if (config.getLastCorrections().stream().noneMatch(m -> m.contains("debug")
+                        && m.contains("kein Schalter"))) {
+                    errors.add("Schalter-Typ nicht gemeldet: " + config.getLastCorrections());
+                }
+                // Tippfehler im Key-Namen.
+                plugin.getConfig().set("max-sped", 300.0);
+                config.reload();
+                if (config.getLastCorrections().stream().noneMatch(m -> m.contains("max-sped")
+                        && m.contains("unbekannter Key"))) {
+                    errors.add("unbekannter Key nicht gemeldet: " + config.getLastCorrections());
+                }
+            } finally {
+                // Den Tippfehler-Key wieder entfernen: PINNED_CONFIG setzt nur bekannte Keys,
+                // der Rest bliebe sonst fuer den ganzen Lauf stehen und meldete sich bei jedem
+                // reload erneut.
+                plugin.getConfig().set("max-sped", null);
+                PINNED_CONFIG.forEach(plugin.getConfig()::set);
+                config.reload();
+            }
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Typfehler, Klemmen und Tippfehler werden alle gemeldet");
+        });
+
+        // Kaputte config.yml: /car reload darf sie NICHT uebernehmen. plugin.reloadConfig()
+        // wuerde bei einem Syntaxfehler still eine leere Konfiguration liefern — jeder Fahrwert
+        // faellt auf den Default, und das naechste /car config schreibt das per saveConfig()
+        // in die Datei. Der laufende Stand muss deshalb unangetastet bleiben.
+        sweep.run("config-reload-kaputt", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            java.io.File file = new java.io.File(plugin.getDataFolder(), "config.yml");
+            byte[] original;
+            try {
+                original = java.nio.file.Files.readAllBytes(file.toPath());
+            } catch (IOException e) {
+                return Result.fail("config.yml nicht lesbar: " + e.getMessage());
+            }
+            double before = plugin.getConfig().getDouble("acceleration");
+            try {
+                java.nio.file.Files.write(file.toPath(),
+                        "max-speed: [kaputt\n  falsch: ]]\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                CarCommand command = new CarCommand(plugin, carManager, config, prefs);
+                command.execute(consoleSource(), new String[]{"reload"});
+                double after = plugin.getConfig().getDouble("acceleration");
+                if (after != before) {
+                    return Result.fail(fmt("kaputte Datei wurde uebernommen: acceleration %.3f statt %.3f",
+                            after, before));
+                }
+                return Result.pass(fmt("kaputte config.yml abgelehnt, acceleration bleibt %.3f", before));
+            } catch (IOException e) {
+                return Result.fail("config.yml nicht schreibbar: " + e.getMessage());
+            } finally {
+                try {
+                    java.nio.file.Files.write(file.toPath(), original);
+                    plugin.reloadConfig();
+                    PINNED_CONFIG.forEach(plugin.getConfig()::set);
+                    config.reload();
+                } catch (IOException e) {
+                    plugin.getLogger().warning("config-reload-kaputt: Wiederherstellung fehlgeschlagen: "
+                            + e.getMessage());
+                }
+            }
+        });
+
         // Hupe: der ausgelieferte Sound-Name muss in der Registry existieren — ein Tippfehler
         // im Default waere sonst erst im Spiel zu hoeren. Umgekehrt darf Unsinn nicht durchgehen.
         sweep.run("config-hupe-sound", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {

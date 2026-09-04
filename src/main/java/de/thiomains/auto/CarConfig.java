@@ -7,6 +7,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -87,50 +88,114 @@ public final class CarConfig {
     public boolean debugWheels;
 
     private final JavaPlugin plugin;
+    /** Was beim letzten reload() stillschweigend haette passieren koennen — jede Korrektur
+     *  einmal im Klartext. Wird geloggt UND von /car reload an den Aufrufer zurueckgegeben:
+     *  ein ignorierter Wert, den niemand sieht, kostet sonst eine Stunde Fehlersuche. */
+    private final List<String> lastCorrections = new ArrayList<>();
 
     public CarConfig(JavaPlugin plugin) {
         this.plugin = plugin;
         reload();
     }
 
+    /** Korrekturen des letzten reload(), in Lesereihenfolge. */
+    public List<String> getLastCorrections() {
+        return List.copyOf(lastCorrections);
+    }
+
+    private void correction(String message) {
+        lastCorrections.add(message);
+        plugin.getLogger().warning("config.yml — " + message);
+    }
+
+    /**
+     * Zahlenwert lesen und dabei sagen, was schiefging: ein Wert vom falschen Typ
+     * (z. B. {@code max-speed: schnell}) faellt sonst still auf den Default zurueck, und ein
+     * Wert ausserhalb des Sinnbereichs wird still geklemmt. Beides sieht der Admin nirgends —
+     * genau das ist die Stunde Fehlersuche, die wir uns hier sparen.
+     */
+    private double number(FileConfiguration c, String key, double def) {
+        Object raw = c.get(key);
+        double value;
+        if (raw == null) {
+            value = def;
+        } else if (raw instanceof Number n) {
+            value = n.doubleValue();
+        } else {
+            correction(key + ": \"" + raw + "\" ist keine Zahl — es gilt " + def);
+            value = def;
+        }
+        double clamped = clampHumanValue(key, value);
+        if (clamped != value) {
+            correction(key + ": " + value + " liegt ausserhalb des Sinnbereichs — es gilt " + clamped);
+        }
+        return clamped;
+    }
+
+    /** Schalter lesen, mit derselben Ansage bei falschem Typ. */
+    private boolean bool(FileConfiguration c, String key, boolean def) {
+        Object raw = c.get(key);
+        if (raw == null) {
+            return def;
+        }
+        if (raw instanceof Boolean b) {
+            return b;
+        }
+        correction(key + ": \"" + raw + "\" ist kein Schalter (true/false) — es gilt " + def);
+        return def;
+    }
+
+    /** Keys in der Datei, die das Plugin nicht kennt — meist Tippfehler, wirken nie. */
+    private void reportUnknownKeys(FileConfiguration c) {
+        for (String key : c.getKeys(false)) {
+            if (key.equals("config-version") || NUMBER_KEYS.contains(key)
+                    || BOOL_KEYS.contains(key) || STRING_KEYS.contains(key)) {
+                continue;
+            }
+            correction(key + ": unbekannter Key, wird ignoriert (Tippfehler?)");
+        }
+    }
+
     public void reload() {
         FileConfiguration c = plugin.getConfig();
+        lastCorrections.clear();
         // Alle Werte werden beim Laden geclampt: Hand-Edits der config.yml koennen die
         // Physik sonst aus dem Sinn-Bereich werfen (z. B. negativer Grip invertiert approachZero).
-        maxSpeed = kmh(clampHumanValue("max-speed", c.getDouble("max-speed", 170.0)));
-        maxReverseSpeed = kmh(clampHumanValue("max-reverse-speed", c.getDouble("max-reverse-speed", 20.0)));
-        maxFallSpeed = kmh(clampHumanValue("max-fall-speed", c.getDouble("max-fall-speed", 144.0)));
-        acceleration = metersPerSecondSquared(clampHumanValue("acceleration", c.getDouble("acceleration", 5.0)));
-        reverseAcceleration = metersPerSecondSquared(clampHumanValue("reverse-acceleration", c.getDouble("reverse-acceleration", 2.0)));
-        brakeDeceleration = metersPerSecondSquared(clampHumanValue("brake-deceleration", c.getDouble("brake-deceleration", 8.0)));
-        handbrakeDeceleration = metersPerSecondSquared(clampHumanValue("handbrake-deceleration", c.getDouble("handbrake-deceleration", 6.0)));
-        engineBraking = metersPerSecondSquared(clampHumanValue("engine-braking", c.getDouble("engine-braking", 1.2)));
-        drag = percentPerSecondToTick(clampHumanValue("drag", c.getDouble("drag", 3.5)));
-        maxLatGrip = metersPerSecondSquared(clampHumanValue("max-lateral-grip", c.getDouble("max-lateral-grip", 18.0)));
-        turnMinSpeed = kmh(clampHumanValue("turn-min-speed", c.getDouble("turn-min-speed", 0.0)));
-        turnCurvature = clampHumanValue("turn-curvature", c.getDouble("turn-curvature", 30.0));
-        downhillAssist = metersPerSecondSquared(clampHumanValue("downhill-assist", c.getDouble("downhill-assist", 6.0)));
-        slopeResistance = clampHumanValue("slope-resistance", c.getDouble("slope-resistance", 10.0)) / 100.0;
-        crashRestitution = clampHumanValue("crash-restitution", c.getDouble("crash-restitution", 25.0)) / 100.0;
-        crashSpin = clampHumanValue("crash-spin", c.getDouble("crash-spin", 100.0)) / 100.0;
-        crashTransfer = clampHumanValue("crash-transfer", c.getDouble("crash-transfer", 60.0)) / 100.0;
-        tipAcceleration = metersPerSecondSquared(clampHumanValue("tip-acceleration", c.getDouble("tip-acceleration", 16.0)));
-        maxSinkSpeed = kmh(clampHumanValue("max-sink-speed", c.getDouble("max-sink-speed", 9.0)));
-        gripConcrete = clampHumanValue("grip-concrete", c.getDouble("grip-concrete", 100.0)) / 100.0;
-        gripGrass = clampHumanValue("grip-grass", c.getDouble("grip-grass", 50.0)) / 100.0;
-        gripIce = clampHumanValue("grip-ice", c.getDouble("grip-ice", 10.0)) / 100.0;
-        gripDefault = clampHumanValue("grip-default", c.getDouble("grip-default", 70.0)) / 100.0;
-        handbrakeGrip = clampHumanValue("handbrake-grip", c.getDouble("handbrake-grip", 50.0)) / 100.0;
-        understeerSound = c.getBoolean("understeer-sound-enabled", false);
-        fieldDamage = c.getBoolean("field-damage-enabled", true);
-        hornPitch = clampHumanValue("horn-pitch", c.getDouble("horn-pitch", 0.5));
-        hornRange = clampHumanValue("horn-range", c.getDouble("horn-range", 80.0));
+        maxSpeed = kmh(number(c, "max-speed", 170.0));
+        maxReverseSpeed = kmh(number(c, "max-reverse-speed", 20.0));
+        maxFallSpeed = kmh(number(c, "max-fall-speed", 144.0));
+        acceleration = metersPerSecondSquared(number(c, "acceleration", 5.0));
+        reverseAcceleration = metersPerSecondSquared(number(c, "reverse-acceleration", 2.0));
+        brakeDeceleration = metersPerSecondSquared(number(c, "brake-deceleration", 8.0));
+        handbrakeDeceleration = metersPerSecondSquared(number(c, "handbrake-deceleration", 6.0));
+        engineBraking = metersPerSecondSquared(number(c, "engine-braking", 1.2));
+        drag = percentPerSecondToTick(number(c, "drag", 3.5));
+        maxLatGrip = metersPerSecondSquared(number(c, "max-lateral-grip", 18.0));
+        turnMinSpeed = kmh(number(c, "turn-min-speed", 0.0));
+        turnCurvature = number(c, "turn-curvature", 30.0);
+        downhillAssist = metersPerSecondSquared(number(c, "downhill-assist", 6.0));
+        slopeResistance = number(c, "slope-resistance", 10.0) / 100.0;
+        crashRestitution = number(c, "crash-restitution", 25.0) / 100.0;
+        crashSpin = number(c, "crash-spin", 100.0) / 100.0;
+        crashTransfer = number(c, "crash-transfer", 60.0) / 100.0;
+        tipAcceleration = metersPerSecondSquared(number(c, "tip-acceleration", 16.0));
+        maxSinkSpeed = kmh(number(c, "max-sink-speed", 9.0));
+        gripConcrete = number(c, "grip-concrete", 100.0) / 100.0;
+        gripGrass = number(c, "grip-grass", 50.0) / 100.0;
+        gripIce = number(c, "grip-ice", 10.0) / 100.0;
+        gripDefault = number(c, "grip-default", 70.0) / 100.0;
+        handbrakeGrip = number(c, "handbrake-grip", 50.0) / 100.0;
+        understeerSound = bool(c, "understeer-sound-enabled", false);
+        fieldDamage = bool(c, "field-damage-enabled", true);
+        hornPitch = number(c, "horn-pitch", 0.5);
+        hornRange = number(c, "horn-range", 80.0);
         hornSound = resolveHornSound(c.getString("horn-sound"));
-        impactDamage = clampHumanValue("impact-damage", c.getDouble("impact-damage", 12.0));
-        impactMinSpeed = kmh(clampHumanValue("impact-min-speed", c.getDouble("impact-min-speed", 15.0)));
-        impactKnockback = clampHumanValue("impact-knockback", c.getDouble("impact-knockback", 60.0)) / 100.0;
-        debug = c.getBoolean("debug", false);
-        debugWheels = c.getBoolean("debug-wheels", false);
+        impactDamage = number(c, "impact-damage", 12.0);
+        impactMinSpeed = kmh(number(c, "impact-min-speed", 15.0));
+        impactKnockback = number(c, "impact-knockback", 60.0) / 100.0;
+        debug = bool(c, "debug", false);
+        debugWheels = bool(c, "debug-wheels", false);
+        reportUnknownKeys(c);
     }
 
     /**
@@ -186,8 +251,8 @@ public final class CarConfig {
             return sound;
         }
         if (name != null && !name.isBlank()) {
-            plugin.getLogger().warning("Unbekannter Sound in horn-sound: \"" + name
-                    + "\" — es gilt " + soundName(DEFAULT_HORN_SOUND) + ".");
+            correction("horn-sound: \"" + name + "\" ist kein Sound der Registry — es gilt "
+                    + soundName(DEFAULT_HORN_SOUND));
         }
         return DEFAULT_HORN_SOUND;
     }

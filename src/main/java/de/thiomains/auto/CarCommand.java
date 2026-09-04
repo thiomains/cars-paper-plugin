@@ -464,10 +464,38 @@ public final class CarCommand implements BasicCommand {
      * potenziell JEDEN Fahrwert auf einen Schlag aendern.
      */
     private void handleReload(CommandSender sender) {
+        // Erst SELBST parsen, dann erst uebernehmen: plugin.reloadConfig() schluckt einen
+        // Syntaxfehler (Bukkit loggt ihn nur) und liefert eine LEERE Konfiguration — der
+        // Aufrufer bekaeme eine gruene Erfolgsmeldung, waehrend in Wahrheit jeder Fahrwert
+        // auf den Default zurueckgefallen ist. Das naechste /car config <key> <wert> wuerde
+        // das per saveConfig() in die Datei schreiben und die kaputte, aber reparierbare
+        // Konfiguration endgueltig ueberbuegeln. Beim Serverstart schuetzt das Backup nach
+        // config.veraltet.yml davor, hier gibt es keins.
+        java.io.File file = new java.io.File(plugin.getDataFolder(), "config.yml");
+        try {
+            new YamlConfiguration().load(file);
+        } catch (java.io.IOException | org.bukkit.configuration.InvalidConfigurationException e) {
+            String detail = e.getMessage() == null ? e.toString() : e.getMessage().split("\n")[0];
+            plugin.getLogger().warning("/car reload abgelehnt, config.yml nicht lesbar: " + detail);
+            sender.sendMessage(Component.text("config.yml nicht lesbar — es bleibt beim bisherigen Stand.",
+                    NamedTextColor.RED));
+            sender.sendMessage(Component.text(detail, NamedTextColor.YELLOW));
+            return;
+        }
         plugin.reloadConfig();
         carConfig.reload();
         sender.sendMessage(Component.text("Konfiguration von der Platte neu eingelesen (live aktiv).",
                 NamedTextColor.GREEN));
+        // Korrekturen nicht nur ins Log: wer den Befehl tippt, soll direkt sehen, welche
+        // seiner Werte NICHT so uebernommen wurden, wie sie in der Datei stehen.
+        List<String> corrections = carConfig.getLastCorrections();
+        if (!corrections.isEmpty()) {
+            sender.sendMessage(Component.text(corrections.size() + " Wert(e) korrigiert:",
+                    NamedTextColor.YELLOW));
+            for (String correction : corrections) {
+                sender.sendMessage(Component.text("  " + correction, NamedTextColor.YELLOW));
+            }
+        }
     }
 
     /** Setzt ALLE Keys auf die ausgelieferten Defaults zurueck — braucht car.config.* (siehe decide()). */

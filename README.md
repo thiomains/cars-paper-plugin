@@ -152,7 +152,14 @@ volle Reset braucht `car.config.*`, der Einzel-Reset wie jedes Setzen die passen
 für Hand-Edits am laufenden Server, ohne Neustart. Braucht dieselbe Node wie der volle Reset,
 weil beides potenziell jeden Fahrwert auf einen Schlag ändert. Der Live-Editor
 (`/car config <key> <wert>`) deckt den Normalfall ab; `reload` ist für den seltenen Fall
-gedacht, dass doch jemand von Hand in der `config.yml` schraubt.
+gedacht, dass doch jemand von Hand in der `config.yml` schraubt. Ist die Datei syntaktisch
+kaputt, lehnt `reload` sie ab und lässt den laufenden Stand unangetastet, statt still auf die
+Defaults zurückzufallen.
+
+Korrigiert wird nie stillschweigend: ein Wert vom falschen Typ (`max-speed: schnell`), ein Wert
+außerhalb des Sinnbereichs (wird geklemmt) und ein vertippter Key (wirkt nie) landen jeweils als
+Klartext-Warnung im Server-Log — `/car reload` zeigt sie zusätzlich direkt im Chat an. Ohne das
+sucht man lange, warum eine Einstellung nicht greift.
 
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
 Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere Default.
