@@ -58,6 +58,9 @@ Sender auch ausführen darf.
 /car prefs [<key> [on|off]]     Eigene Fahreinstellungen anzeigen/ändern
 /car give                       Auto-Item ins Inventar
 /car config [<key> [wert]]      Fahrwerte anzeigen/ändern — Änderungen greifen live
+/car config reset               ALLE Fahrwerte auf die ausgelieferten Defaults zurücksetzen
+/car config <key> reset         Einen einzelnen Fahrwert zurücksetzen
+/car reload                     Config von der Platte neu einlesen (Hand-Edits ohne Neustart)
 ```
 
 `/car prefs`-Keys: `mouse_steer`, `reverse_invert` (Lenkung rückwärts spiegeln),
@@ -144,6 +147,12 @@ Server-Konfiguration, die zufällig noch die alten Werte trug — geänderte Def
 Version erreichen einen bestehenden Server über die Migration sonst nie (siehe unten). Der
 volle Reset braucht `car.config.*`, der Einzel-Reset wie jedes Setzen die passende
 `car.config.<key>`-Node.
+
+`/car reload` ist etwas anderes: es holt sich, was gerade tatsächlich in der Datei steht —
+für Hand-Edits am laufenden Server, ohne Neustart. Braucht dieselbe Node wie der volle Reset,
+weil beides potenziell jeden Fahrwert auf einen Schlag ändert. Der Live-Editor
+(`/car config <key> <wert>`) deckt den Normalfall ab; `reload` ist für den seltenen Fall
+gedacht, dass doch jemand von Hand in der `config.yml` schraubt.
 
 Der Grip kommt aus dem Material unter den Rädern: jede Betonfarbe gilt als Fahrbahn,
 Gras/Erde/Schlamm/Schnee als weich, alle Eisarten als spiegelglatt, alles andere Default.

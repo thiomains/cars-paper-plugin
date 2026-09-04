@@ -823,10 +823,16 @@ public final class SelfTest extends BukkitRunnable {
             Set<String> allConfig = Set.of(CarPermissions.USE, CarPermissions.CONFIG, CarPermissions.CONFIG_ALL);
             expect(errors, "car.config.*: config reset", allConfig, false, CarCommand.Decision.Kind.ALLOW, null,
                     "config", "reset");
+            // /car reload teilt sich die Node mit dem vollen Reset: beide koennen jeden
+            // Fahrwert auf einen Schlag aendern.
+            expect(errors, "Tuner: reload", tuner, false, CarCommand.Decision.Kind.MISSING_PERMISSION,
+                    CarPermissions.CONFIG_ALL, "reload");
+            expect(errors, "car.config.*: reload", allConfig, false, CarCommand.Decision.Kind.ALLOW, null,
+                    "reload");
             if (!errors.isEmpty()) {
                 return Result.fail(String.join(" | ", errors));
             }
-            return Result.pass("18 Kombinationen korrekt");
+            return Result.pass("20 Kombinationen korrekt");
         });
 
         // 19 — Registrierung: jeder Config-Key hat seine Node, Default OP, Kind von car.config.*
@@ -2525,6 +2531,50 @@ public final class SelfTest extends BukkitRunnable {
                 return Result.fail(String.join(" | ", errors));
             }
             return Result.pass("Zahl, Schalter und Text-Key gemeinsam auf die Defaults zurueckgesetzt");
+        });
+
+        // /car reload: anders als reset (Werte aus dem JAR) uebernimmt es genau das, was auf
+        // der Platte steht — der Test schreibt deshalb direkt in die Datei, an plugin.getConfig()
+        // vorbei, und prueft, dass der In-Memory-Stand danach den Datei-Inhalt widerspiegelt.
+        sweep.run("config-reload", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            java.io.File file = new java.io.File(plugin.getDataFolder(), "config.yml");
+            byte[] original;
+            try {
+                original = java.nio.file.Files.readAllBytes(file.toPath());
+            } catch (IOException e) {
+                return Result.fail("config.yml nicht lesbar: " + e.getMessage());
+            }
+            try {
+                YamlConfiguration onDisk = YamlConfiguration.loadConfiguration(file);
+                onDisk.set("acceleration", 42.0);
+                onDisk.save(file);
+                // Ohne reload duerfte plugin.getConfig() den alten Wert noch zeigen — genau das
+                // ist der Unterschied zu carConfig.reload() alleine, das nur den bereits im
+                // Speicher stehenden Stand neu umrechnet.
+                CarCommand command = new CarCommand(plugin, carManager, config, prefs);
+                command.execute(consoleSource(), new String[]{"reload"});
+                double reread = plugin.getConfig().getDouble("acceleration");
+                if (reread != 42.0) {
+                    return Result.fail(fmt("reload hat den Datei-Inhalt nicht uebernommen: %.3f statt 42", reread));
+                }
+                if (config.acceleration <= 0) {
+                    return Result.fail("carConfig wurde nach reload nicht neu berechnet");
+                }
+                return Result.pass("acceleration von der Platte neu eingelesen: 42");
+            } catch (IOException e) {
+                return Result.fail("config.yml nicht schreibbar: " + e.getMessage());
+            } finally {
+                try {
+                    java.nio.file.Files.write(file.toPath(), original);
+                    plugin.reloadConfig();
+                    PINNED_CONFIG.forEach(plugin.getConfig()::set);
+                    config.reload();
+                } catch (IOException e) {
+                    plugin.getLogger().warning("config-reload: Wiederherstellung der config.yml fehlgeschlagen: "
+                            + e.getMessage());
+                }
+            }
         });
 
         // Hupe: der ausgelieferte Sound-Name muss in der Registry existieren — ein Tippfehler

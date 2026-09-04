@@ -43,6 +43,8 @@ public final class CarCommand implements BasicCommand {
             new Sub("prefs", "/car prefs [<key> [on|off]]", "Eigene Fahreinstellungen", CarPermissions.PREFS, false),
             new Sub("give", "/car give", "Auto-Item ins Inventar", CarPermissions.GIVE, false),
             new Sub("config", "/car config [<key> [wert|reset]] | reset", "Fahrwerte anzeigen/ändern/zuruecksetzen", CarPermissions.CONFIG, false),
+            new Sub("reload", "/car reload", "Config von der Platte neu einlesen (Hand-Edits ohne Neustart)",
+                    CarPermissions.CONFIG_ALL, false),
             new Sub("sim", "/car sim <speed> [drift] [gap] [ice] [stairs] [drive]",
                     "Headless-Testfahrt (nur Konsole)", null, true),
             new Sub("selftest", "/car selftest [--verbose] [muster]",
@@ -122,6 +124,7 @@ public final class CarCommand implements BasicCommand {
             case ALLOW -> {
                 switch (decision.sub()) {
                     case "config" -> handleConfig(sender, args);
+                    case "reload" -> handleReload(sender);
                     case "prefs" -> handlePrefs(sender, args);
                     case "give" -> handleGive(sender);
                     case "sim" -> runSim(sender, args);
@@ -451,6 +454,20 @@ public final class CarCommand implements BasicCommand {
             }
         }
         return false;
+    }
+
+    /**
+     * Liest die config.yml neu von der Platte — fuer Hand-Edits am laufenden Server, ohne
+     * Neustart. Anders als /car config reset (Werte aus dem JAR) uebernimmt das genau das,
+     * was gerade auf der Platte steht; wer die Datei zwischen Speichern und /car reload nicht
+     * angefasst hat, aendert nichts. Gleiche Node wie der volle Reset (car.config.*), weil beide
+     * potenziell JEDEN Fahrwert auf einen Schlag aendern.
+     */
+    private void handleReload(CommandSender sender) {
+        plugin.reloadConfig();
+        carConfig.reload();
+        sender.sendMessage(Component.text("Konfiguration von der Platte neu eingelesen (live aktiv).",
+                NamedTextColor.GREEN));
     }
 
     /** Setzt ALLE Keys auf die ausgelieferten Defaults zurueck — braucht car.config.* (siehe decide()). */
