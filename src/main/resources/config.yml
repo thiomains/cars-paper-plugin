@@ -10,7 +10,7 @@
 #
 # Wird nach Einheiten-/Schlüssel-Änderungen automatisch neu erzeugt;
 # unveränderte Keys aus der alten Datei werden dabei übernommen.
-config-version: 14
+config-version: 15
 
 # Max. Vorwärtsgeschwindigkeit in km/h
 max-speed: 170.0
@@ -44,12 +44,13 @@ downhill-assist: 6.0
 # Steigungs-Energie in Prozent: 100 = physikalisch (bergauf kostet Tempo, bergab gewinnt es),
 # 0 = Steigungen sind gratis
 slope-resistance: 10.0
-# Wand-Abpraller in Prozent der Aufprallgeschwindigkeit (serverseitig auf 60 % gedeckelt)
+# Wand-Abpraller in Prozent der Aufprallgeschwindigkeit (serverseitig auf 60 % gedeckelt;
+# der absolute Deckel steht in crash-rebound-max)
 crash-restitution: 25.0
 # Staerke des Crash-Andrehens in Prozent (100 = Standard; dreht die Karosserie um den Aufprallpunkt)
 crash-spin: 100.0
 # Anteil der Aufprall-Geschwindigkeit in Prozent, der beim Auto-Auto-Crash auf das getroffene
-# Auto uebergeht (serverseitig auf ~36 km/h gedeckelt). 0 = Autos bleiben Waende fuereinander.
+# Auto uebergeht (Deckel: car-push-max). 0 = Autos bleiben Waende fuereinander.
 crash-transfer: 60.0
 # Abkippen in m/s²: Schub zur unbelasteten Seite, sobald weniger als drei Raeder tragen.
 # Das Auto balanciert dann nicht auf der Kante, sondern rutscht ab. 0 = balancieren erlaubt.
@@ -64,16 +65,78 @@ grip-ice: 10.0
 grip-default: 70.0
 # Rest-Grip in Prozent während die Handbremse gezogen ist (klein = driftfreudig)
 handbrake-grip: 50.0
-# Quietsch-Sound bei Untersteuern/Schlupf (hiess bis config-version 10 understeer-sound)
+# ── Untersteuer-Quietschen ────────────────────────────────────────────────────
+# Quietsch-Sound bei Untersteuern/Schlupf (der Schalter hiess bis config-version 10
+# understeer-sound; dieser Name ist jetzt der Sound selbst)
 understeer-sound-enabled: false
+# Sound-Name aus der Vanilla-Sound-Registry; unbekannte Namen werden mit einer Warnung
+# im Log auf den Standard zurueckgesetzt.
+understeer-sound: minecraft:entity.horse.death
+# Tonhoehe des Quietschens (0.0-2.0; kleiner = tiefer). 0 ist gewollt: erst ganz unten
+# klingt das Pferdewiehern nach Reifen.
+understeer-pitch: 0.0
+# Hoerweite des Quietschens in Bloecken (Minecraft rechnet sie in Lautstaerke um: Weite / 16;
+# 0 = stumm)
+understeer-range: 8.0
+# Pause zwischen zwei Quietschern in Sekunden
+understeer-cooldown: 0.9
+# Ab diesem Schraeglaufwinkel quietscht es (Grad zwischen Fahrtrichtung und Karosserie)
+understeer-min-slip: 12.0
+
+# ── Harte Landung ─────────────────────────────────────────────────────────────
+# Ab dieser Fallgeschwindigkeit ist die Landung hart (km/h): der Querschwung bricht ein
+# und das Aufsetzen ist hoerbar
+landing-hard-speed: 36.0
+# Wieviel Prozent der Quergeschwindigkeit eine harte Landung uebrig laesst (100 = kein Verlust)
+landing-speed-keep: 70.0
+# Sound der harten Landung, seine Tonhoehe (0.0-2.0) und seine Hoerweite in Bloecken
+landing-sound: minecraft:entity.generic.big_fall
+landing-pitch: 1.0
+landing-range: 12.8
+
+# Reifenrauch: ab diesem Grip-Verbrauch qualmen die Reifen (Prozent; 100 = Rad am Limit,
+# ueber 100 schaltet den Rauch praktisch ab)
+tire-smoke-grip: 85.0
+
+# ── Fahrgefuehl-Feinschliff ───────────────────────────────────────────────────
+# Wasser bremst: % Geschwindigkeitsverlust pro Sekunde im Wasser (wie drag gerechnet;
+# 87.8 entspricht rund 10 % je Tick)
+water-drag: 87.8
+# Mauslenkung: Totzone in Grad — darunter bleibt das Lenkrad gerade
+mouse-deadzone: 4.0
+# Mauslenkung: ab diesem Winkel zur Karosserie liegt das Lenkrad voll an (Grad).
+# Muss ueber mouse-deadzone liegen, sonst gibt es nur noch Vollausschlag.
+mouse-full-lock: 90.0
+# Rangier-Lenkrate in Grad pro Sekunde: so schnell dreht sich das stehende Auto an einer Wand
+crawl-turn-rate: 40.0
+# Darunter rastet das Auto in den Stillstand, statt ewig weiterzukriechen (km/h)
+standstill-speed: 0.5
+# ... aber nur ab diesem Grip (Prozent); auf Eis rollt es stattdessen aus
+standstill-min-grip: 40.0
+
+# ── Crash-Deckel ──────────────────────────────────────────────────────────────
+# Deckel des Wand-Rueckprallers in km/h (crash-restitution rechnet den Anteil, dieser Wert
+# begrenzt ihn — ohne Deckel rollt der Rueckpraller ewig weiter)
+crash-rebound-max: 7.2
+# Erst ab diesem Tempo gibt es Rueckpraller und Andrehen (km/h); darunter ruhiges Rangieren
+crash-min-speed: 5.0
+# Deckel des Impulses, der beim Auto-Auto-Crash uebergeht, in km/h (crash-transfer = Anteil)
+car-push-max: 36.0
+# Deckel der Crash-Drehrate in Grad pro Sekunde (crash-spin = Staerke)
+crash-spin-max: 360.0
 # Anfahren: Schaden fuer Mobs und Spieler in Schadenspunkten (2 = ein Herz), gerechnet bei
 # 100 km/h und linear zum Tempo. 0 schaltet es ab. Der Schaden laeuft ueber den Fahrer, also
 # greifen PvP-Flags und Schutz-Plugins.
 impact-damage: 12.0
 # Erst ab diesem Tempo tut das Anfahren weh (km/h) — darunter ist es Rangieren
 impact-min-speed: 15.0
-# Wegstossen in Prozent der Fahrzeuggeschwindigkeit (serverseitig auf ~50 km/h gedeckelt)
+# Wegstossen in Prozent der Fahrzeuggeschwindigkeit (Deckel: impact-knockback-max)
 impact-knockback: 60.0
+# Deckel des Stosses beim Anfahren in km/h
+impact-knockback-max: 50.4
+# Auftriebsanteil des Stosses in Prozent: ohne ihn frisst die Bodenreibung den Stoss binnen
+# weniger Ticks und vom Treffer bleibt nichts sichtbar
+impact-lift: 50.0
 # Feldschaden: Nutzpflanzen gehen beim Umfahren kaputt (mit Drop) und Ackerland wird unter
 # den Raedern zu Erde. Beides laeuft ueber EntityChangeBlockEvent, Schutz-Plugins koennen es
 # also abfangen.
@@ -86,6 +149,8 @@ horn-sound: minecraft:block.note_block.didgeridoo
 horn-pitch: 0.5
 # Hoerweite der Hupe in Bloecken (Minecraft rechnet sie in Lautstaerke um: Weite / 16)
 horn-range: 80.0
+# Pause zwischen zwei Hupern in Sekunden
+horn-cooldown: 0.5
 # Debug-Logging (Fahrzustand, Ein-/Aussteigen) in die Konsole
 debug: false
 # Debug-Anzeige der Rad-Aufstandspunkte als Partikel: gruen = Rad traegt, rot = Rad haengt,

@@ -29,7 +29,8 @@ public final class CarCommand implements BasicCommand {
     private static final List<String> BOOL_KEYS = CarConfig.BOOL_KEYS;
     private static final List<String> STRING_KEYS = CarConfig.STRING_KEYS;
     private static final List<String> MAX_100_KEYS = List.of(
-            "drag", "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip");
+            "drag", "water-drag", "grip-concrete", "grip-grass", "grip-ice", "grip-default",
+            "handbrake-grip", "landing-speed-keep", "standstill-min-grip");
 
     private static final List<String> PREF_KEYS = List.of(
             "mouse_steer", "reverse_invert", "actionbar", "actionbar_speed", "actionbar_grip");
@@ -554,15 +555,20 @@ public final class CarCommand implements BasicCommand {
     private String unitSuffix(String key) {
         return switch (key) {
             case "max-speed", "max-reverse-speed", "max-fall-speed", "turn-min-speed", "max-sink-speed",
-                 "impact-min-speed" -> " km/h";
+                 "impact-min-speed", "impact-knockback-max", "landing-hard-speed", "standstill-speed",
+                 "crash-rebound-max", "crash-min-speed", "car-push-max" -> " km/h";
             case "acceleration", "reverse-acceleration", "brake-deceleration", "handbrake-deceleration",
                  "engine-braking", "max-lateral-grip", "downhill-assist" -> " m/s²";
-            case "drag" -> " %/s";
+            case "drag", "water-drag" -> " %/s";
             case "turn-curvature" -> " °/m";
-            case "horn-range" -> " Blöcke";
+            case "horn-range", "understeer-range", "landing-range" -> " Blöcke";
+            case "understeer-cooldown", "horn-cooldown" -> " s";
+            case "understeer-min-slip", "mouse-deadzone", "mouse-full-lock" -> " °";
+            case "crawl-turn-rate", "crash-spin-max" -> " °/s";
             case "grip-concrete", "grip-grass", "grip-ice", "grip-default", "handbrake-grip",
                  "slope-resistance", "crash-restitution", "crash-spin", "crash-transfer",
-                 "impact-knockback" -> " %";
+                 "impact-knockback", "landing-speed-keep", "tire-smoke-grip",
+                 "standstill-min-grip", "impact-lift" -> " %";
             default -> "";
         };
     }
@@ -576,9 +582,14 @@ public final class CarCommand implements BasicCommand {
         };
     }
 
-    /** Aktueller Wert eines String-Keys (bisher gibt es genau einen). */
+    /** Aktueller Wert eines String-Keys — bisher ist jeder davon ein Sound-Name. */
     private String stringValue(String key) {
-        return key.equals("horn-sound") ? CarConfig.soundName(carConfig.hornSound) : "";
+        return switch (key) {
+            case "horn-sound" -> CarConfig.soundName(carConfig.hornSound);
+            case "understeer-sound" -> CarConfig.soundName(carConfig.understeerSoundName);
+            case "landing-sound" -> CarConfig.soundName(carConfig.landingSound);
+            default -> "";
+        };
     }
 
     private void unknownKey(CommandSender sender, String key) {

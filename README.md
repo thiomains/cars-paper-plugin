@@ -95,7 +95,7 @@ umstellen.
 
 ## Konfiguration
 
-`config.yml` (`config-version: 14`). Die Werte sind menschenlesbar; `CarConfig.reload()`
+`config.yml` (`config-version: 15`). Die Werte sind menschenlesbar; `CarConfig.reload()`
 rechnet in Blöcke/Tick um und clampt jeden Wert auf seinen Sinn-Bereich (jeder Zahlen-Key hat
 auch eine Obergrenze — `max-speed 100000` würde den Server sonst lahmlegen) — genau diesen
 wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei als
@@ -109,13 +109,17 @@ wirksamen Wert zeigt `/car config`. Bei einem Versionssprung wird die alte Datei
 | Untergrund | `grip-concrete`, `grip-grass`, `grip-ice`, `grip-default` |
 | Gelände | `downhill-assist`, `slope-resistance` |
 | Crash | `crash-restitution`, `crash-spin`, `crash-transfer`, `tip-acceleration` |
-| Hupe | `horn-sound`, `horn-pitch`, `horn-range` |
-| Anfahren | `impact-damage`, `impact-min-speed`, `impact-knockback` |
-| Feld | `field-damage-enabled` |
-| Sonstiges | `understeer-sound-enabled`, `debug`, `debug-wheels` |
+| Crash-Deckel | `crash-rebound-max`, `crash-min-speed`, `car-push-max`, `crash-spin-max` |
+| Hupe | `horn-sound`, `horn-pitch`, `horn-range`, `horn-cooldown` |
+| Quietschen | `understeer-sound-enabled`, `understeer-sound`, `understeer-pitch`, `understeer-range`, `understeer-cooldown`, `understeer-min-slip` |
+| Landung | `landing-hard-speed`, `landing-speed-keep`, `landing-sound`, `landing-pitch`, `landing-range` |
+| Anfahren | `impact-damage`, `impact-min-speed`, `impact-knockback`, `impact-knockback-max`, `impact-lift` |
+| Fahrgefühl | `water-drag`, `mouse-deadzone`, `mouse-full-lock`, `crawl-turn-rate`, `standstill-speed`, `standstill-min-grip` |
+| Feld & Optik | `field-damage-enabled`, `tire-smoke-grip` |
+| Sonstiges | `debug`, `debug-wheels` |
 
 `crash-transfer` ist der Anteil der Aufprallgeschwindigkeit, der beim Auto-Auto-Crash auf das
-getroffene Auto übergeht (Standard 60 %, serverseitig auf rund 36 km/h gedeckelt). Die Richtung
+getroffene Auto übergeht (Standard 60 %, gedeckelt auf `car-push-max` = 36 km/h). Die Richtung
 kommt aus der Verbindungsachse der beiden Mitten, ein seitlicher Streifer schiebt also zur
 Seite und nicht nach vorn. `0` macht Autos wieder zu Wänden füreinander.
 
@@ -123,7 +127,8 @@ Wer angefahren wird, nimmt Schaden und fliegt zur Seite: `impact-damage` ist der
 Schadenspunkten (2 = ein Herz) **bei 100 km/h** und skaliert linear mit dem Tempo, `0` schaltet
 es ab. Unter `impact-min-speed` (Standard 15 km/h) passiert nichts — Rangieren tut nicht weh.
 `impact-knockback` ist der Anteil der Fahrzeuggeschwindigkeit, der als Stoß weitergegeben wird
-(serverseitig auf rund 50 km/h gedeckelt). Der Schaden läuft über den Fahrer, also greifen
+(gedeckelt auf `impact-knockback-max`); `impact-lift` ist der Auftriebsanteil davon — ohne ihn
+frisst die Bodenreibung den Stoß binnen weniger Ticks und man sieht vom Treffer nichts. Der Schaden läuft über den Fahrer, also greifen
 PvP-Flags und Schutz-Plugins; Mitfahrer und Rüstungsständer sind ausgenommen. Das Auto wird
 davon **nicht** langsamer.
 
@@ -133,14 +138,26 @@ droppen, und Ackerland wird unter den Rädern zu Erde. Beides läuft über
 Schutz-Plugins können es also abfangen. Gras, Blumen und Zuckerrohr bleiben stehen; die Liste
 der betroffenen Pflanzen ist bewusst fest.
 
-`horn-sound` ist ein Name aus der Vanilla-Sound-Registry (`minecraft:block.note_block.didgeridoo`
-ist der Standard); ein unbekannter Name wird mit einer Warnung im Log auf den Standard
-zurückgesetzt. `horn-range` steht in Blöcken (Standard 80) — Minecraft rechnet daraus die
-Lautstärke.
+Die drei Sounds — Hupe (`horn-sound`), Reifenquietschen (`understeer-sound`) und harte Landung
+(`landing-sound`) — sind Namen aus der Vanilla-Sound-Registry; ein unbekannter Name wird mit
+einer Warnung im Log auf den Standard zurückgesetzt. Dazu gehören jeweils `-pitch` (0.0–2.0,
+kleiner = tiefer) und `-range` in Blöcken, aus der Minecraft die Lautstärke rechnet (Weite / 16).
+Die Pausen `horn-cooldown` und `understeer-cooldown` stehen in **Sekunden** und zählen intern
+in Ticks, damit Server-Lag sie nicht verschiebt.
 
-Beim Update auf 1.5.0: `understeer-sound` heißt jetzt `understeer-sound-enabled`, damit das
-Suffix `-sound` eindeutig für den Sound-**Namen** steht. Ein gesetzter Wert wandert bei der
-Migration automatisch mit.
+Das Quietschen ist per `understeer-sound-enabled` standardmäßig **aus**. Ist es an, quietscht
+es ab `understeer-min-slip` Grad Schräglaufwinkel — dem Winkel zwischen Fahrtrichtung und
+Karosserie, also genau dann, wenn das Auto schiebt statt zu lenken.
+
+`landing-hard-speed` (Standard 36 km/h) trennt die weiche von der harten Landung: darüber
+bricht der Querschwung auf `landing-speed-keep` ein und das Aufsetzen ist hörbar.
+`tire-smoke-grip` ist der Grip-Verbrauch, ab dem die Reifen rauchen (100 % = Rad am Limit);
+über 100 stellt den Rauch praktisch ab.
+
+Beim Update auf 1.5.0: `understeer-sound` hieß der **Schalter** und heißt jetzt
+`understeer-sound-enabled`. Seit 1.5.1 ist der frei gewordene Name der **Sound** selbst; die
+Migration unterscheidet die beiden am Typ des alten Wertes, ein alter Schalter landet also
+nicht als Sound-Name in der neuen Datei.
 
 `reset` holt den Wert aus der im Plugin mitgelieferten `config.yml`, nicht aus einer
 Server-Konfiguration, die zufällig noch die alten Werte trug — geänderte Defaults einer neuen

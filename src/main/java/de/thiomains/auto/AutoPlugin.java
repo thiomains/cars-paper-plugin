@@ -9,7 +9,7 @@ public final class AutoPlugin extends JavaPlugin {
 
     /** Bei jeder Aenderung an Keys oder Einheiten hochzaehlen — muss zum config-version
      *  in der ausgelieferten config.yml passen (der Selftest prueft genau das). */
-    static final int CONFIG_VERSION = 14;
+    static final int CONFIG_VERSION = 15;
 
     private NamespacedKey carKey;
     private NamespacedKey carPartKey;
@@ -97,7 +97,10 @@ public final class AutoPlugin extends JavaPlugin {
     }
 
     /** Umbenannte Keys: alter Name -> neuer Name. Ohne diese Tabelle faellt ein umbenannter
-     *  Key bei der Migration weg und der Nutzer steht wieder auf dem Default. */
+     *  Key bei der Migration weg und der Nutzer steht wieder auf dem Default.
+     *  <p>Achtung: ein frei gewordener alter Name darf spaeter neu vergeben werden
+     *  (understeer-sound war bis config-version 10 der Schalter und ist seit 15 der
+     *  Sound-Name) — deshalb prueft carryOver zusaetzlich den TYP des alten Wertes. */
     private static final java.util.Map<String, String> RENAMED_KEYS = java.util.Map.of(
             "understeer-sound", "understeer-sound-enabled");
 
@@ -111,21 +114,21 @@ public final class AutoPlugin extends JavaPlugin {
                          org.bukkit.configuration.ConfigurationSection target) {
         int carried = 0;
         for (String key : CarConfig.NUMBER_KEYS) {
-            String from = sourceKey(old, key);
+            String from = sourceKey(old, key, value -> value instanceof Number);
             if (from != null) {
                 target.set(key, old.getDouble(from));
                 carried++;
             }
         }
         for (String key : CarConfig.BOOL_KEYS) {
-            String from = sourceKey(old, key);
+            String from = sourceKey(old, key, value -> value instanceof Boolean);
             if (from != null) {
                 target.set(key, old.getBoolean(from));
                 carried++;
             }
         }
         for (String key : CarConfig.STRING_KEYS) {
-            String from = sourceKey(old, key);
+            String from = sourceKey(old, key, value -> value instanceof String);
             if (from != null) {
                 target.set(key, old.getString(from));
                 carried++;
@@ -134,13 +137,22 @@ public final class AutoPlugin extends JavaPlugin {
         return carried;
     }
 
-    /** Unter welchem Namen der Wert in der alten Datei steht (aktueller Name oder alter), sonst null. */
-    private static String sourceKey(org.bukkit.configuration.ConfigurationSection old, String key) {
-        if (old.isSet(key)) {
+    /**
+     * Unter welchem Namen der Wert in der alten Datei steht (aktueller Name oder alter), sonst
+     * null. Der Typ muss zur Key-Kategorie passen: sonst wandert ein wiederverwendeter Name in
+     * die falsche Kategorie — der alte Schalter {@code understeer-sound: false} wuerde als
+     * Sound-Name "false" uebernommen und beim naechsten Start als kaputt gemeldet. Passt der
+     * Typ am aktuellen Namen nicht, zaehlt der Key als nicht gesetzt und der alte Name bekommt
+     * seine Chance ueber RENAMED_KEYS.
+     */
+    private static String sourceKey(org.bukkit.configuration.ConfigurationSection old, String key,
+                                    java.util.function.Predicate<Object> typeFits) {
+        if (old.isSet(key) && typeFits.test(old.get(key))) {
             return key;
         }
         for (java.util.Map.Entry<String, String> renamed : RENAMED_KEYS.entrySet()) {
-            if (renamed.getValue().equals(key) && old.isSet(renamed.getKey())) {
+            if (renamed.getValue().equals(key) && old.isSet(renamed.getKey())
+                    && typeFits.test(old.get(renamed.getKey()))) {
                 return renamed.getKey();
             }
         }

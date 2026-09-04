@@ -156,6 +156,22 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("grip-default", 80.0),
             Map.entry("handbrake-grip", 35.0),
             Map.entry("understeer-sound-enabled", true),
+            // Seit config-version 15 stehen auch diese Groessen in der config.yml. Gepinnt
+            // werden die Werte, gegen die die Szenarien kalibriert sind — sonst kippt eine
+            // von Hand verstellte Datei auf dem Testserver die Crash- und Wasser-Faelle.
+            Map.entry("landing-hard-speed", 36.0),
+            Map.entry("landing-speed-keep", 70.0),
+            Map.entry("tire-smoke-grip", 85.0),
+            Map.entry("water-drag", 87.8),
+            Map.entry("crawl-turn-rate", 40.0),
+            Map.entry("standstill-speed", 0.5),
+            Map.entry("standstill-min-grip", 40.0),
+            Map.entry("crash-rebound-max", 7.2),
+            Map.entry("crash-min-speed", 5.0),
+            Map.entry("car-push-max", 36.0),
+            Map.entry("crash-spin-max", 360.0),
+            Map.entry("impact-knockback-max", 50.4),
+            Map.entry("impact-lift", 50.0),
             // Aus, sonst pfluegt die Physik-Suite ihre eigenen Ackerland-Bahnen um und misst
             // ab dem zweiten Sample auf Erde (anderer Grip). Der Feldschaden-Fall schaltet
             // ihn fuer sich selbst ein.
@@ -1784,7 +1800,7 @@ public final class SelfTest extends BukkitRunnable {
         // Unter turn-min-speed steht das Lenkrad still — ausser beim Rangieren am Hindernis.
         double wheelCap = speed >= config.turnMinSpeed
                 ? config.turnCurvature * speed
-                : DriveTask.CRAWL_TURN_DEG;
+                : config.crawlTurnRate;
         return Math.min(wheelCap, gripCap);
     }
 
@@ -2343,7 +2359,7 @@ public final class SelfTest extends BukkitRunnable {
     // verrutschte Einheit, eine Migration, die still nichts uebernimmt.
 
     /** Umrechnungsregeln der config.yml, wie sie CarConfig.reload() anwendet. */
-    private enum Unit { KMH, MS2, PROZENT, DRAG, ROH }
+    private enum Unit { KMH, MS2, PROZENT, DRAG, SEKUNDEN, PRO_SEKUNDE, ROH }
 
     private static final Map<String, Unit> UNITS = Map.ofEntries(
             Map.entry("max-speed", Unit.KMH),
@@ -2374,7 +2390,29 @@ public final class SelfTest extends BukkitRunnable {
             Map.entry("impact-damage", Unit.ROH),
             Map.entry("impact-min-speed", Unit.KMH),
             Map.entry("impact-knockback", Unit.PROZENT),
-            Map.entry("horn-range", Unit.ROH));
+            Map.entry("horn-range", Unit.ROH),
+            Map.entry("horn-cooldown", Unit.SEKUNDEN),
+            Map.entry("understeer-pitch", Unit.ROH),
+            Map.entry("understeer-range", Unit.ROH),
+            Map.entry("understeer-cooldown", Unit.SEKUNDEN),
+            Map.entry("understeer-min-slip", Unit.ROH),
+            Map.entry("landing-hard-speed", Unit.KMH),
+            Map.entry("landing-speed-keep", Unit.PROZENT),
+            Map.entry("landing-pitch", Unit.ROH),
+            Map.entry("landing-range", Unit.ROH),
+            Map.entry("tire-smoke-grip", Unit.PROZENT),
+            Map.entry("water-drag", Unit.DRAG),
+            Map.entry("mouse-deadzone", Unit.ROH),
+            Map.entry("mouse-full-lock", Unit.ROH),
+            Map.entry("crawl-turn-rate", Unit.PRO_SEKUNDE),
+            Map.entry("standstill-speed", Unit.KMH),
+            Map.entry("standstill-min-grip", Unit.PROZENT),
+            Map.entry("crash-rebound-max", Unit.KMH),
+            Map.entry("crash-min-speed", Unit.KMH),
+            Map.entry("car-push-max", Unit.KMH),
+            Map.entry("crash-spin-max", Unit.PRO_SEKUNDE),
+            Map.entry("impact-knockback-max", Unit.KMH),
+            Map.entry("impact-lift", Unit.PROZENT));
 
     private void configAndRegistry() {
         Sweep sweep = sweep("config-registry", INPUT_CLEAR);
@@ -2431,6 +2469,8 @@ public final class SelfTest extends BukkitRunnable {
                     case MS2 -> human / 400.0;
                     case PROZENT -> human / 100.0;
                     case DRAG -> 1.0 - Math.pow(1.0 - human / 100.0, 1.0 / 20.0);
+                    case SEKUNDEN -> human * 20.0;
+                    case PRO_SEKUNDE -> human / 20.0;
                     case ROH -> human;
                 };
                 double actual = configValue(key);
@@ -2673,17 +2713,26 @@ public final class SelfTest extends BukkitRunnable {
             }
         });
 
-        // Hupe: der ausgelieferte Sound-Name muss in der Registry existieren — ein Tippfehler
+        // Sound-Keys: jeder ausgelieferte Name muss in der Registry existieren — ein Tippfehler
         // im Default waere sonst erst im Spiel zu hoeren. Umgekehrt darf Unsinn nicht durchgehen.
-        sweep.run("config-hupe-sound", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        sweep.run("config-sound-namen", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
         }, run -> {
             List<String> errors = new ArrayList<>();
-            String shipped = plugin.getConfig().getString("horn-sound");
-            if (CarConfig.lookupSound(shipped) == null) {
-                errors.add("ausgelieferter horn-sound loest nicht auf: " + shipped);
+            YamlConfiguration shipped = shippedConfig();
+            if (shipped == null) {
+                return Result.fail("config.yml liegt nicht im Jar");
             }
-            if (config.hornSound == null) {
-                errors.add("hornSound ist nach reload() null");
+            // Bisher ist jeder String-Key ein Sound-Name; ein Key mit anderer Bedeutung
+            // gehoert hier ausgenommen.
+            for (String key : CarConfig.STRING_KEYS) {
+                String name = shipped.getString(key);
+                if (CarConfig.lookupSound(name) == null) {
+                    errors.add("ausgelieferter " + key + " loest nicht auf: " + name);
+                }
+            }
+            if (config.hornSound == null || config.understeerSoundName == null
+                    || config.landingSound == null) {
+                errors.add("ein Sound ist nach reload() null");
             }
             if (CarConfig.lookupSound("minecraft:kein.sound.dieser.welt") != null) {
                 errors.add("unbekannter Sound-Name wurde akzeptiert");
@@ -2702,7 +2751,8 @@ public final class SelfTest extends BukkitRunnable {
             if (!errors.isEmpty()) {
                 return Result.fail(String.join(" | ", errors));
             }
-            return Result.pass("horn-sound loest auf: " + CarConfig.soundName(config.hornSound));
+            return Result.pass(CarConfig.STRING_KEYS.size() + " Sound-Keys loesen auf, zuletzt "
+                    + CarConfig.soundName(config.landingSound));
         });
 
         // Migration: bekannte Keys werden uebernommen, umbenannte wandern mit, unbekannte fallen weg.
@@ -2744,6 +2794,54 @@ public final class SelfTest extends BukkitRunnable {
                 return Result.fail(String.join(" | ", errors));
             }
             return Result.pass("4 Keys uebernommen (inkl. Umbenennung), unbekannter verworfen");
+        });
+
+        // Ein frei gewordener Key-Name darf neu vergeben werden: understeer-sound war bis
+        // config-version 10 der SCHALTER und ist seit 15 der SOUND-NAME. Ohne die Typpruefung
+        // in carryOver landet das alte "false" als Sound-Name in der neuen Datei und der
+        // Server meldet beim naechsten Start einen kaputten Sound, den niemand eingetragen hat.
+        sweep.run("config-migration-typen", false, 0, 0, null, 0f, GROUND_Y - 3.0, lane -> {
+        }, run -> {
+            List<String> errors = new ArrayList<>();
+
+            YamlConfiguration alt = new YamlConfiguration();
+            alt.set("understeer-sound", false);          // der alte Schalter
+            YamlConfiguration ziel = new YamlConfiguration();
+            AutoPlugin.carryOver(alt, ziel);
+            if (ziel.isSet("understeer-sound")) {
+                errors.add("alter Schalter wurde als Sound-Name uebernommen: "
+                        + ziel.get("understeer-sound"));
+            }
+            if (ziel.getBoolean("understeer-sound-enabled", true)) {
+                errors.add("alter Schalter kam nicht unter dem neuen Namen an");
+            }
+
+            // Umgekehrt: ab config-version 15 steht dort ein Sound-Name, der muss mitwandern
+            // und darf den Schalter NICHT anfassen.
+            YamlConfiguration neu = new YamlConfiguration();
+            neu.set("understeer-sound", "minecraft:entity.donkey.angry");
+            YamlConfiguration ziel2 = new YamlConfiguration();
+            AutoPlugin.carryOver(neu, ziel2);
+            if (!"minecraft:entity.donkey.angry".equals(ziel2.getString("understeer-sound"))) {
+                errors.add("Sound-Name nicht uebernommen: " + ziel2.getString("understeer-sound"));
+            }
+            if (ziel2.isSet("understeer-sound-enabled")) {
+                errors.add("Sound-Name ist faelschlich im Schalter gelandet");
+            }
+
+            // Und ein Zahlen-Key mit Text darin faellt weg, statt als 0 anzukommen.
+            YamlConfiguration kaputt = new YamlConfiguration();
+            kaputt.set("max-speed", "schnell");
+            YamlConfiguration ziel3 = new YamlConfiguration();
+            AutoPlugin.carryOver(kaputt, ziel3);
+            if (ziel3.isSet("max-speed")) {
+                errors.add("Text im Zahlen-Key wurde uebernommen: " + ziel3.get("max-speed"));
+            }
+
+            if (!errors.isEmpty()) {
+                return Result.fail(String.join(" | ", errors));
+            }
+            return Result.pass("Typpruefung haelt Schalter, Sound-Name und Zahl auseinander");
         });
 
         // Spieler-Prefs: der alte Key reverse_invert_mouse muss still migriert werden.
@@ -2968,6 +3066,28 @@ public final class SelfTest extends BukkitRunnable {
             case "impact-min-speed" -> config.impactMinSpeed;
             case "impact-knockback" -> config.impactKnockback;
             case "horn-range" -> config.hornRange;
+            case "horn-cooldown" -> config.hornCooldownTicks;
+            case "understeer-pitch" -> config.understeerPitch;
+            case "understeer-range" -> config.understeerRange;
+            case "understeer-cooldown" -> config.understeerCooldownTicks;
+            case "understeer-min-slip" -> config.understeerMinSlip;
+            case "landing-hard-speed" -> config.landingHardSpeed;
+            case "landing-speed-keep" -> config.landingSpeedKeep;
+            case "landing-pitch" -> config.landingPitch;
+            case "landing-range" -> config.landingRange;
+            case "tire-smoke-grip" -> config.tireSmokeGrip;
+            case "water-drag" -> config.waterDrag;
+            case "mouse-deadzone" -> config.mouseDeadzone;
+            case "mouse-full-lock" -> config.mouseFullLock;
+            case "crawl-turn-rate" -> config.crawlTurnRate;
+            case "standstill-speed" -> config.standstillSpeed;
+            case "standstill-min-grip" -> config.standstillMinGrip;
+            case "crash-rebound-max" -> config.crashReboundMax;
+            case "crash-min-speed" -> config.crashMinSpeed;
+            case "car-push-max" -> config.carPushMax;
+            case "crash-spin-max" -> config.crashSpinMax;
+            case "impact-knockback-max" -> config.impactKnockbackMax;
+            case "impact-lift" -> config.impactLift;
             default -> Double.NaN;
         };
     }

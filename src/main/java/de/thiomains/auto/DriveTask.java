@@ -8,7 +8,6 @@ import org.bukkit.Input;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
-import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
@@ -44,12 +43,10 @@ import java.util.Set;
  */
 public final class DriveTask extends BukkitRunnable {
 
-    private static final long UNDERSTEER_SOUND_COOLDOWN_TICKS = 18;
     static final double GRAVITY_ACCEL = 0.08;
     private static final double ALIGN_FRACTION = 0.65;
     private static final double FRICTION_FRACTION = 0.5;
     static final double SPEED_EPSILON = 0.05;
-    private static final double SLIP_SOUND_MIN_DEG = 12.0;
     private static final double SAMPLE_STEP = 0.4;
     // Stufenhoehe, die die Raeder noch nehmen: ein GANZER Block, auch wenn das Auto auf einem
     // Belag mit gekappter Oberkante steht (Schlamm/Seelensand 0,875 -> Stufe misst 1,125).
@@ -57,14 +54,8 @@ public final class DriveTask extends BukkitRunnable {
     private static final double LONG_HALF = 1.25;
     private static final double LAT_HALF = 0.9;
     private static final double CAR_COLLISION_RADIUS = 1.4;
-    private static final double STANDSTILL_SPEED = 0.007; // ~0,5 km/h
-    private static final double STANDSTILL_MIN_GRIP = 0.4; // darunter (glatt) rollt das Auto aus statt zu rasten
-    private static final double WATER_DRAG = 0.10;
     private static final double WATER_SINK_DAMPING = 0.85; // Rest des Abstands zu max-sink-speed je Substep
-    private static final double LANDING_SOUND_MIN_FALL = 0.5; // ~36 km/h vertikal
-    private static final double LANDING_SPEED_KEEP = 0.7;
     static final double MAX_STEP_DOWN = 1.2;
-    static final double CRAWL_TURN_DEG = 2.0; // Rangier-Lenkrate bei Stillstand-Kontakt
     private static final double OVERSPEED_DOWNHILL_FACTOR = 1.5;
     // Strecke, ueber die eine Hoehendifferenz energetisch verrechnet wird (Fahrzeuglaenge).
     // Je Tick wird der Anteil der Schuld faellig, der auf die gefahrene Strecke entfaellt.
@@ -76,31 +67,15 @@ public final class DriveTask extends BukkitRunnable {
     private static final double SLOPE_DEBT_FADE = 0.90;
     /** Hoehe der Karosserie (dieselbe 1,8 wie die Klick-Hitbox in CarManager). */
     private static final double BODY_HEIGHT = 1.8;
-    /** Ab diesem Grip-Verbrauch (Traktionskreis, 1.0 = Limit) qualmen die Reifen. Knapp unter
-     *  dem Limit statt genau darauf, sonst wirkt der Rauch bei Vollgasstarts sprunghaft an/aus. */
-    private static final double TIRE_SMOKE_MIN = 0.85;
-    /** Deckel des Wegstossens in Bloecken/Tick (~50 km/h) — sonst fliegt ein Schaf ueber die halbe Karte. */
-    private static final double IMPACT_KNOCKBACK_MAX = 0.7;
-    /** Anteil des Stosses, der nach oben geht. Nicht Deko, sondern der Grund, warum man vom
-     *  Stoss ueberhaupt etwas sieht: am Boden frisst die Reibung die Querbewegung binnen
-     *  weniger Ticks (0,6 je Tick), in der Luft nur 0,09. Wer angefahren wird, hebt ab und
-     *  fliegt dann weit — ohne Auftrieb bleibt es bei einem halben Block Geschubse. */
-    private static final double IMPACT_LIFT = 0.5;
-    /** Deckel des Auto-Auto-Stosses in Bloecken/Tick (~36 km/h): ein Rempler schiebt beiseite,
-     *  er katapultiert nicht. */
-    private static final double CAR_PUSH_MAX = 0.5;
-    private static final double CRASH_MIN_SPEED = 0.07; // ~5 km/h: darunter ruhiger Rangier-Stopp statt Abpraller
-    private static final double CRASH_REBOUND_MAX = 0.10; // ~7 km/h: gedeckelt, sonst rollt der Rueckprall ewig weiter
+    /** Umrechnung des Aufprall-Drehmoments in eine Drehrate. Die STAERKE regelt crash-spin,
+     *  den Deckel crash-spin-max — ein dritter Regler fuer dieselbe Groesse waere nur verwirrend. */
     private static final double SPIN_SCALE = 3.0; // deg/tick pro (Hebel-Blocks × Impact-Bl/tick)
-    private static final double MAX_SPIN = 18.0; // deg/tick, gegen unansehnliche Vollrotation
     private static final double SPIN_DEADBAND = 0.05;
     private static final double PITCH_ACCEL_DEG = 150.0; // Grad pro Bl/tick² Pedal-Kraft (Squat/Dive), gedeckelt
     private static final double PITCH_ACCEL_MAX_DEG = 8.0;
     private static final double YAW_SMOOTH_IN = 0.30;
     private static final double YAW_SMOOTH_OUT = 0.40;
     private static final double YAW_DEADBAND = 0.03;
-    private static final double MOUSE_DEADZONE_DEG = 4.0; // darunter bleibt das Lenkrad gerade
-    private static final double MOUSE_FULL_LOCK_DEG = 90.0; // quer zur Karosse = voller Einschlag
     // Zwei Raster mit zwei Aufgaben. Karosserie (GRID_*, reale Masse 1,8 x 2,5): was das Auto
     // BLOCKIERT — die Stossstange darf nicht in eine Wand fahren. Aufstandsflaeche (SUPPORT_*,
     // Achsen plus Unterboden): was das Auto TRAEGT. Wer beides vermischt, hebt das Auto schon
@@ -218,7 +193,7 @@ public final class DriveTask extends BukkitRunnable {
                 double gripCapDeg = Math.toDegrees((config.maxLatGrip * grip) / Math.max(startAbs, SPEED_EPSILON));
                 double wheelCapDeg = startAbs >= config.turnMinSpeed
                         ? config.turnCurvature * startAbs
-                        : (car.wasStepBlocked() ? CRAWL_TURN_DEG : 0.0);
+                        : (car.wasStepBlocked() ? config.crawlTurnRate : 0.0);
                 double allowed = Math.min(wheelCapDeg, gripCapDeg);
                 if (allowed > 1.0e-6) {
                     double diff = steerDemand(input, driver, yaw, vf, allowed);
@@ -318,7 +293,8 @@ public final class DriveTask extends BukkitRunnable {
 
         // Standfest: ohne Pedal unterhalb der Kriechgrenze hart anhalten — aber nur, wenn die
         // Reifen tragen koennen; auf Glatteis laeuft der Restschwung stattdessen natuerlich aus.
-        if (grounded && !pedals && grip >= STANDSTILL_MIN_GRIP && Math.hypot(vx, vz) < STANDSTILL_SPEED) {
+        if (grounded && !pedals && grip >= config.standstillMinGrip
+                && Math.hypot(vx, vz) < config.standstillSpeed) {
             vx = 0;
             vz = 0;
         }
@@ -439,16 +415,17 @@ public final class DriveTask extends BukkitRunnable {
             car.setSlopeDebt(0);
         }
         // Harte Landung nur nach echtem Fall: Querschwung bricht ein, Aufsetzen ist hörbar
-        if (fallBefore > LANDING_SOUND_MIN_FALL && car.getFallSpeed() == 0 && !gravity.snapped()) {
-            vx *= LANDING_SPEED_KEEP;
-            vz *= LANDING_SPEED_KEEP;
-            world.playSound(new Location(world, targetX, targetY, targetZ), Sound.ENTITY_GENERIC_BIG_FALL, 0.8f, 1.0f);
+        if (fallBefore > config.landingHardSpeed && car.getFallSpeed() == 0 && !gravity.snapped()) {
+            vx *= config.landingSpeedKeep;
+            vz *= config.landingSpeedKeep;
+            world.playSound(new Location(world, targetX, targetY, targetZ), config.landingSound,
+                    (float) (config.landingRange / 16.0), (float) config.landingPitch);
         }
 
         // Wasser bremst stark (und trägt nicht -> das Auto sinkt, siehe supportsCar)
         if (world.getBlockAt(floor(targetX), floor(targetY), floor(targetZ)).getType() == Material.WATER) {
-            vx *= 1.0 - WATER_DRAG;
-            vz *= 1.0 - WATER_DRAG;
+            vx *= 1.0 - config.waterDrag;
+            vz *= 1.0 - config.waterDrag;
         }
 
         car.setVelX(vx);
@@ -544,7 +521,8 @@ public final class DriveTask extends BukkitRunnable {
                 sendActionBar(driver, Math.hypot(vx, vz), vf, gripUsage);
             }
             double speedNow = Math.hypot(vx, vz);
-            if (grounded && config.understeerSound && slipDeg > SLIP_SOUND_MIN_DEG && speedNow > config.turnMinSpeed * 2) {
+            if (grounded && config.understeerSound && slipDeg > config.understeerMinSlip
+                    && speedNow > config.turnMinSpeed * 2) {
                 playUndersteerSound(car, world, loc);
             }
         }
@@ -677,7 +655,7 @@ public final class DriveTask extends BukkitRunnable {
     /**
      * Mauslenkung als Lenkrad: der Blickwinkel gegenueber der FAHRZEUGACHSE wird auf den
      * Lenkeinschlag abgebildet. Beide Achsenrichtungen sind dabei "geradeaus" — nach vorn UND
-     * nach hinten schauen laesst das Rad gerade, quer (MOUSE_FULL_LOCK_DEG = 90°) liegt es voll
+     * nach hinten schauen laesst das Rad gerade, quer (mouse-full-lock, Standard 90°) liegt es voll
      * an, dazwischen linear; innerhalb der Totzone passiert nichts. Dadurch gilt dieselbe
      * Abbildung, egal ob der Fahrer nach vorn blickt oder beim Rueckwaertsfahren ueber die
      * Schulter — ohne sie stand das Lenkrad beim Zurueckschauen sofort am Anschlag, weil der
@@ -692,11 +670,13 @@ public final class DriveTask extends BukkitRunnable {
             // hinter der Quere geht es wieder Richtung geradeaus: 180° = Blick nach hinten
             magnitude = 180.0 - magnitude;
         }
-        if (magnitude <= MOUSE_DEADZONE_DEG) {
+        if (magnitude <= config.mouseDeadzone) {
             return 0;
         }
-        double fraction = Math.min(1.0,
-                (magnitude - MOUSE_DEADZONE_DEG) / (MOUSE_FULL_LOCK_DEG - MOUSE_DEADZONE_DEG));
+        // Der Nenner darf nicht auf null fallen: mouse-full-lock kann von Hand unter die
+        // Totzone gesetzt werden, dann steht ab der Totzone sofort Vollausschlag an.
+        double span = Math.max(1.0e-6, config.mouseFullLock - config.mouseDeadzone);
+        double fraction = Math.min(1.0, (magnitude - config.mouseDeadzone) / span);
         return Math.signum(diff) * fraction * allowed;
     }
 
@@ -764,14 +744,14 @@ public final class DriveTask extends BukkitRunnable {
 
     /**
      * Crash-Physik bei Blockade: statt die Achsen-Komponente still zu loeschen, wird sie teilweise
-     * reflektiert (crash-restitution, auf CRASH_REBOUND_MAX gedeckelt, gegen andere Autos nur halb)
+     * reflektiert (crash-restitution, auf crash-rebound-max gedeckelt, gegen andere Autos nur halb)
      * und Wandkontakte versetzen die Karosserie ueber den Aufprall-Hebel in Drehung
-     * (tau = Hebel x Impuls, 2D-Kreuzprodukt). Unter CRASH_MIN_SPEED bleibt es der ruhige
+     * (tau = Hebel x Impuls, 2D-Kreuzprodukt). Unter crash-min-speed bleibt es der ruhige
      * Rangier-Stopp. Rueckgabe: die neue Achsen-Geschwindigkeit.
      */
     private double resolveCrashVelocity(Car car, double vAxis, StepResult sr, double fromX, double fromZ) {
         double impact = sr.impactSpeed();
-        if (impact < CRASH_MIN_SPEED) {
+        if (impact < config.crashMinSpeed) {
             return 0.0;
         }
         boolean hitCar = sr.impactAxis() == 3;
@@ -785,9 +765,10 @@ public final class DriveTask extends BukkitRunnable {
             double normX = sr.impactAxis() == 1 ? -Math.signum(vAxis) : 0.0;
             double normZ = sr.impactAxis() == 2 ? -Math.signum(vAxis) : 0.0;
             double torque = leverX * (normZ * impact) - leverZ * (normX * impact);
-            car.setSpinVel(clamp(car.getSpinVel() + config.crashSpin * SPIN_SCALE * torque, -MAX_SPIN, MAX_SPIN));
+            car.setSpinVel(clamp(car.getSpinVel() + config.crashSpin * SPIN_SCALE * torque,
+                    -config.crashSpinMax, config.crashSpinMax));
         }
-        return -clamp(restitution * impact, 0.0, CRASH_REBOUND_MAX) * Math.signum(vAxis);
+        return -clamp(restitution * impact, 0.0, config.crashReboundMax) * Math.signum(vAxis);
     }
 
     /**
@@ -1098,7 +1079,7 @@ public final class DriveTask extends BukkitRunnable {
             return;
         }
         other.setLastPushTick(tickCount);
-        double push = Math.min(config.crashTransfer * impact, CAR_PUSH_MAX);
+        double push = Math.min(config.crashTransfer * impact, config.carPushMax);
         other.setVelX(other.getVelX() + dx / dist * push);
         other.setVelZ(other.getVelZ() + dz / dist * push);
     }
@@ -1150,8 +1131,8 @@ public final class DriveTask extends BukkitRunnable {
             // Schaden linear zum Tempo: config.impactDamage gilt bei 100 km/h.
             double kmh = speed * 72.0;
             living.damage(config.impactDamage * kmh / 100.0, source);
-            double push = Math.min(speed * config.impactKnockback, IMPACT_KNOCKBACK_MAX);
-            living.setVelocity(new Vector(vx / speed * push, push * IMPACT_LIFT, vz / speed * push));
+            double push = Math.min(speed * config.impactKnockback, config.impactKnockbackMax);
+            living.setVelocity(new Vector(vx / speed * push, push * config.impactLift, vz / speed * push));
         }
     }
 
@@ -1285,8 +1266,8 @@ public final class DriveTask extends BukkitRunnable {
                 // Farbe/Textur automatisch zum Material passen — Gras staeubt gruen-braun,
                 // Beton grau, ohne dass hier eine Materialliste gepflegt werden muss. Nur alle
                 // zwei Ticks, sonst wird es bei Drift/Vollgasstart eine dichte Wand.
-                if (smokeUsage >= TIRE_SMOKE_MIN && tickCount % 2 == 0 && !ground.isAir()) {
-                    int count = 1 + (int) Math.min(3, (smokeUsage - TIRE_SMOKE_MIN) * 8);
+                if (smokeUsage >= config.tireSmokeGrip && tickCount % 2 == 0 && !ground.isAir()) {
+                    int count = 1 + (int) Math.min(3, (smokeUsage - config.tireSmokeGrip) * 8);
                     world.spawnParticle(Particle.BLOCK, wx[w], tops[w] + 0.1, wz[w], count,
                             0.12, 0.02, 0.12, 0.0, ground.createBlockData());
                 }
@@ -1403,11 +1384,13 @@ public final class DriveTask extends BukkitRunnable {
     }
 
     private void playUndersteerSound(Car car, World world, Location loc) {
-        if (tickCount - car.getLastUndersteerSoundTick() < UNDERSTEER_SOUND_COOLDOWN_TICKS) {
+        if (tickCount - car.getLastUndersteerSoundTick() < config.understeerCooldownTicks) {
             return;
         }
         car.setLastUndersteerSoundTick(tickCount);
-        world.playSound(loc, Sound.ENTITY_HORSE_DEATH, 0.5f, 0.0f);
+        // Wie bei der Hupe: Bukkits Hoerweite ist 16 Bloecke je Lautstaerke-Punkt.
+        world.playSound(loc, config.understeerSoundName,
+                (float) (config.understeerRange / 16.0), (float) config.understeerPitch);
     }
 
     private double approachZero(double value, double step) {

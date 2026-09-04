@@ -27,10 +27,6 @@ import org.bukkit.inventory.ItemStack;
  */
 public final class CarListener implements Listener {
 
-    /** Mindestabstand zweier Hupstoesse. Tick-basiert wie der Untersteuer-Sound, damit
-     *  Server-Lag den Abstand nicht verschiebt. */
-    private static final long HORN_COOLDOWN_TICKS = 10;
-
     private final CarManager carManager;
     private final CarConfig config;
     private final java.util.logging.Logger logger;
@@ -75,10 +71,11 @@ public final class CarListener implements Listener {
         return car != null && car.getDriver() == player ? car : null;
     }
 
-    /** Spielt die Hupe am Auto ab, gedeckelt durch den Cooldown. */
+    /** Spielt die Hupe am Auto ab, gedeckelt durch horn-cooldown. Der Abstand zaehlt in
+     *  Ticks (wie beim Untersteuer-Sound), damit Server-Lag ihn nicht verschiebt. */
     private void honk(Car car, Player player) {
         long now = Bukkit.getCurrentTick();
-        if (now - car.getLastHornTick() < HORN_COOLDOWN_TICKS) {
+        if (now - car.getLastHornTick() < config.hornCooldownTicks) {
             return;
         }
         car.setLastHornTick(now);
